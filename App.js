@@ -17,21 +17,24 @@ const SITES = { CifraClub: 'https://www.cifraclub.com/', LaCuerda: 'https://acor
 const EXTRACT = `(function(){var p=[].slice.call(document.querySelectorAll('pre')).sort(function(a,b){return b.innerText.length-a.innerText.length})[0];
 window.ReactNativeWebView.postMessage(JSON.stringify({title:document.title,text:p?p.innerText:''}));})();true;`;
 
-const chordPro = (t) => t.split('\n').map((l) => { const p = parseLine(l); return p.chords + '\n' + p.lyrics; }).join('\n');
+const chordPro = (t) => t.split('\n').map((l) => { const p = parseLine(l); return (p.chords ? p.chords + '\n' : '') + p.lyrics; }).join('\n');
 const uid = () => String(Date.now() + Math.random());
+const safe = (s, d) => { try { return JSON.parse(s) ?? d; } catch { return d; } };
+const nextName = (vs) => 'v' + (Math.max(0, ...vs.map((v) => +(v.name.match(/^v(\d+)$/) || [])[1] || 0)) + 1); // no repite nombres tras borrar
 const SAMPLE = [{ id: 's1', title: 'Cumpleaños feliz', versions: [{ id: 's1a', name: 'v1', body: chordPro('[C]Cumpleaños fe[G]liz, cumpleaños fe[C]liz\nTe de[C7]seamos todos, cumpleaños fe[F]liz\nQue los cum[C]plas fe[G]liz, que los cum[C]plas feliz') }] }];
 
 // Texto crudo (archivo .txt/.cho, texto pegado o página) -> { title, body } con acordes arriba de la letra.
 function normalize(raw, fallbackTitle = '') {
   let title = fallbackTitle;
-  const lines = raw.replace(/\r/g, '').split('\n').filter((l) => {
+  const lines = raw.replace(/\r/g, '').split('\n').flatMap((l) => {
     const d = l.match(/^\s*\{\s*(\w+)\s*:?\s*(.*?)\}\s*$/);
-    if (d && /^(title|t)$/i.test(d[1])) title = d[2] || title;
-    return !d;
+    if (!d) return [l];
+    if (/^(title|t)$/i.test(d[1])) title = d[2] || title;
+    return /^(c|comment|ci)$/i.test(d[1]) ? [d[2]] : []; // los comentarios son contenido visible; el resto de directivas se ignora
   });
   let body = lines.join('\n').trim();
   const inline = body.match(/\[[^\]]+\]/g) || [];
-  if (!lines.some(isChordLine) && inline.some((t) => isChord(t.slice(1, -1)))) body = chordPro(body);
+  if (inline.some((t) => isChord(t.slice(1, -1)))) body = chordPro(body); // ChordPro: [Am] dentro de la letra ("[Intro]" no cuenta)
   return { title: title.replace(/\s*[-|]\s*(Cifra Club|La ?Cuerda).*$/i, '').trim(), body };
 }
 
@@ -60,7 +63,10 @@ export default function App() {
   useEffect(() => {
     AsyncStorage.multiGet(['groups', 'songs', 'theme', 'inst']).then(([[, g], [, old], [, t], [, i]]) => {
       // Migración: versión anterior guardaba canciones sueltas en 'songs'.
-      setGroups(g ? JSON.parse(g) : old ? JSON.parse(old).map((x) => ({ id: x.id, title: x.title, versions: [{ id: uid(), name: 'v1', body: x.body }] })) : SAMPLE);
+      const oldList = safe(old, null);
+      const list = safe(g, null) ?? (oldList ? oldList.map((x) => ({ id: x.id, title: x.title, versions: [{ id: uid(), name: 'v1', body: x.body }] })) : SAMPLE);
+      setGroups(list);
+      if (!g) AsyncStorage.setItem('groups', JSON.stringify(list)); // persiste la migración (ids estables)
       if (t) setPref(t);
       if (i && INSTRUMENTS[i]) setInst(i);
     });
@@ -106,7 +112,7 @@ export default function App() {
   const commitDraft = () => {
     const body = draft.body;
     if (existing) {
-      const v = { id: uid(), name: `v${existing.versions.length + 1}`, body };
+      const v = { id: uid(), name: nextName(existing.versions), body };
       save(groups.map((g) => (g === existing ? { ...g, versions: [...g.versions, v] } : g)));
       setGid(existing.id);
     } else {
@@ -255,7 +261,7 @@ export default function App() {
         <Text style={s.sub}>Nombre de la canción</Text>
         <TextInput style={s.input} value={draft.title} onChangeText={(t) => setDraft({ ...draft, title: t })} placeholder="Ej: Cumpleaños feliz" placeholderTextColor={c.sub} />
         <Text style={[s.sub, { marginVertical: 12 }]}>
-          {existing ? `Se agregará como ${'v' + (existing.versions.length + 1)} dentro de “${existing.title}”.` : 'Se creará una canción nueva con la versión v1.'}
+          {existing ? `Se agregará como ${nextName(existing.versions)} dentro de “${existing.title}”.` : 'Se creará una canción nueva con la versión v1.'}
         </Text>
         <Btn s={s} label="Guardar" onPress={commitDraft} />
       </>

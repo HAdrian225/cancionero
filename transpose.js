@@ -11,7 +11,7 @@ export function transposeChord(chord, n) {
 }
 
 const CHORD = /^[A-G][#b]?(m|M|maj|min|dim|aug|sus|add|º|°|\+|-|\d|#|b|\(|\))*(\/([A-G][#b]?|\d+))?$/;
-const NOISE = /^([|x\d()\-\/.:]+|\[[^\]]*\]|N\.?C\.?|(intro|solo|puente|coro|estribillo|verso|riff|final|outro)\W*)$/i; // "|", "x2", etc. dentro de una línea de acordes
+const NOISE = /^([|x\d()\-\/.:]+|\[[^\]]*\]|N\.?C\.?|(intro|solo|puente|coro|pre-?coro|estribillo|verso|estrofa|riff|final|outro|chorus|verse|bridge|pre-?chorus|interlude|instrumental|coda)\W*)$/i; // "|", "x2", etc. dentro de una línea de acordes
 
 // ¿La línea es solo acordes? (formato "acordes arriba de la letra" de lacuerda/cifraclub)
 export const isChord = (t) => CHORD.test(t);

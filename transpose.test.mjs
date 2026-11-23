@@ -25,3 +25,7 @@ assert.ok(isChordLine('Am  N.C.  G'));
 assert.ok(isChordLine('A7/13  E7/9'));
 assert.ok(!isChordLine('Final'));
 console.log('ok3');
+assert.ok(isChordLine('[Chorus] C G'));
+assert.ok(isChordLine('Pre-coro: Am G'));
+assert.ok(!isChordLine('Chorus'));
+console.log('ok4');

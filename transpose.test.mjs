@@ -20,3 +20,8 @@ assert.equal(transposeChordLine('Am   F   G', 2), 'Bm   G   A');
 assert.equal(transposeChordLine('C   D   E', 1), 'C#  D#  F');
 assert.equal(transposeChordLine('C#  D', -1), 'C   C#');
 console.log('ok2');
+assert.ok(isChordLine('[Intro] C  G  Am'));
+assert.ok(isChordLine('Am  N.C.  G'));
+assert.ok(isChordLine('A7/13  E7/9'));
+assert.ok(!isChordLine('Final'));
+console.log('ok3');

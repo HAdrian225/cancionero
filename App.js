@@ -1,8 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, FlatList, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { isChordLine, parseLine, transposeChord, transposeChordLine } from './transpose';
+import { isChord, isChordLine, parseLine, transposeChord, transposeChordLine } from './transpose';
 
 // Muestras en ChordPro, convertidas al mismo formato que las canciones importadas (acordes arriba de la letra).
 const chordPro = (t) => t.split('\n').map((l) => { const p = parseLine(l); return p.chords + '\n' + p.lyrics; }).join('\n');
@@ -75,7 +75,7 @@ export default function App() {
     );
 
   const lines = song.body.split('\n');
-  const first = lines.find(isChordLine)?.trim().split(/\s+/)[0];
+  const first = lines.find(isChordLine)?.trim().split(/\s+/).find(isChord);
   return (
     <SafeAreaView style={s.screen}>
       <Pressable onPress={() => setSong(null)}><Text style={s.back}>‹ Canciones</Text></Pressable>
@@ -105,7 +105,7 @@ const Btn = ({ label, onPress }) => (
   <Pressable style={s.btn} onPress={onPress}><Text style={s.btnText}>{label}</Text></Pressable>
 );
 
-const mono = { fontFamily: 'Menlo', fontSize: 13, lineHeight: 18 };
+const mono = { fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }), fontSize: 13, lineHeight: 18 };
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#fff', paddingHorizontal: 28, paddingTop: (StatusBar.currentHeight || 50) + 8, paddingBottom: 24 },
   h1: { fontSize: 22, fontWeight: '700', marginBottom: 6 },

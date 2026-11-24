@@ -52,11 +52,45 @@ export const nextBeatType = (current) => {
   return BEAT_NORMAL;
 };
 
+// Genera un WAV PCM silencioso de 100 ms (8-bit mono 8 kHz) en memoria para desbloquear
+// el canal de reproducción multimedia en iOS Safari / PWA incluso con el iPhone en silencio.
+function createSilentWavUrl() {
+  if (typeof Blob === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
+    return null;
+  }
+  const sampleRate = 8000;
+  const dataSize = 800; // 100 ms
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const writeStr = (offset, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true); // 8-bit unsigned
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+  new Uint8Array(buffer, 44).fill(128); // 0x80 = silencio exacto sin click
+
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+}
+
 // Motor de metrónomo 100% offline con compás custom (ej. 2/5, 7/8) y sonidos por tiempo
-// (fuerte, negra, palma sintetizada, silencio).
+// (fuerte, negra, palma sintetizada, silencio), optimizado para iPhone Safari/PWA.
 export function createMetronomeEngine({ onBeat }) {
   let ctx = null;
   let noiseBuffer = null;
+  let silentAudio = null;
+  let silentWavUrl = null;
   let timer = null;
   let running = false;
   let sessionId = 0;
@@ -74,14 +108,58 @@ export function createMetronomeEngine({ onBeat }) {
     beatTimeouts.clear();
   };
 
+  // Fuerza sesión 'playback' en iOS 17+ y dispara un micro-WAV silencioso en <audio playsinline>
+  // para que Web Audio suene aunque el iPhone tenga el modo silencio activado.
+  const unlockIOSPlaybackChannel = () => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    try {
+      if (window.navigator?.audioSession && 'type' in window.navigator.audioSession) {
+        window.navigator.audioSession.type = 'playback';
+      }
+    } catch {
+      // No soportado en algunos navegadores
+    }
+
+    try {
+      if (typeof Audio !== 'undefined') {
+        if (!silentAudio) {
+          silentWavUrl = createSilentWavUrl();
+          if (silentWavUrl) {
+            silentAudio = new Audio(silentWavUrl);
+            silentAudio.loop = true;
+            silentAudio.playsInline = true;
+            silentAudio.setAttribute?.('playsinline', 'true');
+            silentAudio.setAttribute?.('webkit-playsinline', 'true');
+          }
+        }
+        if (silentAudio) {
+          silentAudio.currentTime = 0;
+          const p = silentAudio.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        }
+      }
+    } catch {
+      // Ignora si el navegador bloquea HTMLAudio
+    }
+  };
+
   const ensureAudioContext = () => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtx) return null;
     if (!ctx) ctx = new AudioCtx();
-    if (ctx.state !== 'running') {
-      ctx.resume().catch(() => {});
+
+    // Desbloqueo síncrono de 1 sample dentro del gesto táctil (requerido en Safari iOS).
+    try {
+      const unlockBuf = ctx.createBuffer(1, 1, 22050);
+      const unlockSrc = ctx.createBufferSource();
+      unlockSrc.buffer = unlockBuf;
+      unlockSrc.connect(ctx.destination);
+      unlockSrc.start(0);
+    } catch {
+      // Ignora si el contexto todavía no admite start
     }
+
     return ctx;
   };
 
@@ -99,17 +177,17 @@ export function createMetronomeEngine({ onBeat }) {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(isAccent ? 1140 : 780, time);
-    osc.frequency.exponentialRampToValueAtTime(isAccent ? 560 : 420, time + 0.032);
+    osc.frequency.setValueAtTime(isAccent ? 1180 : 820, time);
+    osc.frequency.exponentialRampToValueAtTime(isAccent ? 580 : 440, time + 0.032);
 
     gain.gain.setValueAtTime(0.001, time);
-    gain.gain.linearRampToValueAtTime(isAccent ? 0.58 : 0.36, time + 0.003);
-    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.045);
+    gain.gain.linearRampToValueAtTime(isAccent ? 0.78 : 0.54, time + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.048);
 
     osc.connect(gain);
     gain.connect(audioCtx.destination);
     osc.start(time);
-    osc.stop(time + 0.05);
+    osc.stop(time + 0.055);
   };
 
   const scheduleClap = (audioCtx, time) => {
@@ -121,19 +199,19 @@ export function createMetronomeEngine({ onBeat }) {
 
       const filter = audioCtx.createBiquadFilter();
       filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(1250, time + offset);
-      filter.Q.setValueAtTime(1.4, time + offset);
+      filter.frequency.setValueAtTime(1300, time + offset);
+      filter.Q.setValueAtTime(1.3, time + offset);
 
       const gain = audioCtx.createGain();
       gain.gain.setValueAtTime(0.001, time + offset);
-      gain.gain.linearRampToValueAtTime(offset === 0 ? 0.5 : 0.65, time + offset + 0.004);
-      gain.gain.exponentialRampToValueAtTime(0.001, time + offset + (offset === 0 ? 0.03 : 0.11));
+      gain.gain.linearRampToValueAtTime(offset === 0 ? 0.65 : 0.85, time + offset + 0.004);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + offset + (offset === 0 ? 0.032 : 0.115));
 
       src.connect(filter);
       filter.connect(gain);
       gain.connect(audioCtx.destination);
       src.start(time + offset);
-      src.stop(time + offset + 0.13);
+      src.stop(time + offset + 0.135);
     }
   };
 
@@ -141,8 +219,12 @@ export function createMetronomeEngine({ onBeat }) {
 
   const webTick = () => {
     if (!running || !ctx) return;
-    if (nextNoteTime < ctx.currentTime - 0.15) {
-      nextNoteTime = ctx.currentTime + 0.04;
+    if (ctx.state !== 'running') {
+      ctx.resume().catch(() => {});
+      return;
+    }
+    if (nextNoteTime < 0 || nextNoteTime < ctx.currentTime - 0.15) {
+      nextNoteTime = ctx.currentTime + 0.03;
     }
 
     const lookaheadSec = 0.1;
@@ -197,6 +279,13 @@ export function createMetronomeEngine({ onBeat }) {
       clearTimeout(timer);
       timer = null;
     }
+    if (silentAudio) {
+      try {
+        silentAudio.pause();
+      } catch {
+        // ignorar
+      }
+    }
     clearPendingBeatTimeouts();
     if (notify) onBeat(-1);
   };
@@ -215,11 +304,22 @@ export function createMetronomeEngine({ onBeat }) {
       stopInternal(false);
       running = true;
       currentBeat = 0;
+      nextNoteTime = -1;
+      const activeSession = sessionId;
 
+      unlockIOSPlaybackChannel();
       const audioCtx = ensureAudioContext();
       if (audioCtx) {
-        nextNoteTime = audioCtx.currentTime + 0.04;
-        webTick();
+        if (audioCtx.state === 'running') {
+          webTick();
+        } else {
+          audioCtx
+            .resume()
+            .then(() => {
+              if (running && sessionId === activeSession) webTick();
+            })
+            .catch(() => {});
+        }
         timer = setInterval(webTick, 25);
       } else {
         nativeTick();
@@ -234,6 +334,18 @@ export function createMetronomeEngine({ onBeat }) {
     dispose() {
       stopInternal(false);
       noiseBuffer = null;
+      if (silentAudio) {
+        try {
+          silentAudio.pause();
+        } catch {
+          // ignorar
+        }
+        silentAudio = null;
+      }
+      if (silentWavUrl && typeof URL !== 'undefined' && URL.revokeObjectURL) {
+        URL.revokeObjectURL(silentWavUrl);
+        silentWavUrl = null;
+      }
       if (ctx && typeof ctx.close === 'function') {
         ctx.close().catch(() => {});
         ctx = null;

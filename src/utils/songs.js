@@ -93,20 +93,115 @@ export function getFirstLyricSnippet(body) {
   return line || '';
 }
 
-// Líneas de índice o separadores con una serie de guiones seguidos (nunca borra tablaturas).
-const INDEX_DASHES_RE = /-{3,}|_{3,}|─{3,}|—{2,}/;
+// Líneas de índice o separadores:
+// - serie de guiones seguidos (---, ____, ───, ——)
+// - línea con puntos terminada en número de página (ej. "Aclaró ........ 6", "Himno .. 87")
+// Nunca elimina tablaturas (e|---0---|) ni letras con puntos suspensivos ("calor...", "A.....leluya,").
+const INDEX_LINE_RE = /-{3,}|_{3,}|─{3,}|—{2,}|\.{2,}\s*\d+\s*$/;
 const STANDALONE_NUMBER_RE = /^\s*(\d{1,4})\s*[.)\-º°]?\s*$/;
 
 export function isIndexLine(line) {
-  return typeof line === 'string' && !isTabLine(line) && INDEX_DASHES_RE.test(line);
+  return typeof line === 'string' && !isTabLine(line) && INDEX_LINE_RE.test(line);
 }
 
 export function hasMusicContent(body) {
   return body.split('\n').some((l) => isTabLine(l) || isChordLine(l));
 }
 
-// Limpia líneas de índice con guiones y separa un .txt con múltiples canciones
-// cuando detecta un número solo en su propio renglón.
+function isLikelyHeading(line) {
+  const t = line.trim();
+  if (!t || t.length > 78) return false;
+  if (/^\s*\{.*\}\s*$/.test(t)) return false;
+  if (isTabLine(t) || isChordLine(t)) return false;
+  if ((t.match(/\[[^\]]+\]/g) || []).some((x) => isChord(x.slice(1, -1)))) return false;
+  return true;
+}
+
+function isUpperHeading(line) {
+  const t = line.trim();
+  if (!isLikelyHeading(t)) return false;
+  if (/[.,;!?¡¿]$/.test(t)) return false;
+  const letters = t.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g, '');
+  return letters.length >= 3 && letters === letters.toUpperCase();
+}
+
+// Si una misma página contiene 2+ canciones cortas (ej. "ALELUYA – E" y "ALELUYA – EM"),
+// las separa cuando aparece un título en MAYÚSCULAS rodeado de líneas en blanco seguido de acordes.
+function splitSubSongsInPage(lines) {
+  const blocks = [];
+  let start = 0;
+
+  for (let i = 2; i < lines.length - 1; i++) {
+    if (lines[i - 1].trim() !== '') continue;
+    if (!isUpperHeading(lines[i])) continue;
+
+    let nextNonEmpty = i + 1;
+    while (nextNonEmpty < lines.length && lines[nextNonEmpty].trim() === '') nextNonEmpty++;
+    if (nextNonEmpty === i + 1 || nextNonEmpty >= lines.length) continue;
+
+    // Debe haber música antes del corte y acordes/tablatura justo después del nuevo título.
+    const nextLine = lines[nextNonEmpty];
+    const nextIsMusic =
+      isTabLine(nextLine) ||
+      isChordLine(nextLine) ||
+      (nextLine.match(/\[[^\]]+\]/g) || []).some((x) => isChord(x.slice(1, -1)));
+
+    if (!nextIsMusic) continue;
+
+    const beforeChunk = lines.slice(start, i);
+    if (!hasMusicContent(beforeChunk.join('\n'))) continue;
+
+    blocks.push(beforeChunk);
+    start = i;
+  }
+
+  blocks.push(lines.slice(start));
+  return blocks;
+}
+
+function buildSongFromChunk(chunkLines, fallbackTitle) {
+  const firstNonEmpty = chunkLines.findIndex((l) => l.trim().length > 0);
+  if (firstNonEmpty < 0) return null;
+
+  let trimmed = chunkLines.slice(firstNonEmpty);
+  let title = fallbackTitle;
+  let bodyLines = trimmed;
+
+  // Caso categoría + título pegados al inicio de una sección (ej. "ENTRADA\nACLARÓ\n\nF Bb C").
+  if (
+    trimmed.length >= 3 &&
+    isUpperHeading(trimmed[0]) &&
+    isLikelyHeading(trimmed[1]) &&
+    trimmed[1].trim().length > 0
+  ) {
+    let afterTwo = 2;
+    while (afterTwo < trimmed.length && trimmed[afterTwo].trim() === '') afterTwo++;
+    const nextMusic =
+      afterTwo < trimmed.length &&
+      (isChordLine(trimmed[afterTwo]) || isTabLine(trimmed[afterTwo]));
+    if (nextMusic) {
+      title = trimmed[1].trim().replace(/^\d+\s*[.)\-–—]\s*/, '').trim() || fallbackTitle;
+      bodyLines = trimmed.slice(2);
+    }
+  }
+
+  if (bodyLines === trimmed && isLikelyHeading(trimmed[0]) && trimmed.length > 1) {
+    title = trimmed[0].trim().replace(/^\d+\s*[.)\-–—]\s*/, '').trim() || fallbackTitle;
+    bodyLines = trimmed.slice(1);
+  }
+
+  const cleanedBody = bodyLines.map((l) => l.trimEnd()).join('\n');
+  const normalized = normalize(cleanedBody, title);
+  if (!normalized.body || !hasMusicContent(normalized.body)) return null;
+
+  return {
+    title: normalized.title || fallbackTitle,
+    body: normalized.body,
+  };
+}
+
+// Limpia líneas de índice (guiones o puntos + página) y separa un .txt con múltiples canciones
+// cuando detecta números solos en su propio renglón (y sub-canciones dentro de una misma página).
 export function parseMultiImport(raw, fallbackTitle = '') {
   const text = typeof raw === 'string' ? raw.replace(/\r/g, '') : '';
   const allLines = text.split('\n');
@@ -121,7 +216,7 @@ export function parseMultiImport(raw, fallbackTitle = '') {
     }
   }
 
-  // Detecta si hay renglones que contienen únicamente un número (ej. "1", "23", "145.").
+  // Detecta renglones que contienen únicamente un número (ej. "1", "23", "145.").
   const markerIndices = [];
   for (let i = 0; i < cleanLines.length; i++) {
     const m = cleanLines[i].match(STANDALONE_NUMBER_RE);
@@ -133,45 +228,19 @@ export function parseMultiImport(raw, fallbackTitle = '') {
     for (let k = 0; k < markerIndices.length; k++) {
       const start = markerIndices[k].index + 1;
       const end = k + 1 < markerIndices.length ? markerIndices[k + 1].index : cleanLines.length;
-      const num = markerIndices[k].number;
+      const pageLines = cleanLines.slice(start, end);
+      const subBlocks = splitSubSongsInPage(pageLines);
 
-      const chunkLines = cleanLines.slice(start, end);
-      let firstNonEmpty = chunkLines.findIndex((l) => l.trim().length > 0);
-      if (firstNonEmpty < 0) continue;
-
-      const trimmedChunk = chunkLines.slice(firstNonEmpty);
-      const firstLine = trimmedChunk[0].trim();
-
-      let title = `Tema ${num}`;
-      let bodyLines = trimmedChunk;
-
-      // Si la primera línea tras el número NO es acordes ni tablatura ni directiva ChordPro,
-      // y parece un título (<= 95 caracteres), la usamos como título de la canción.
-      const isDirective = /^\s*\{.*\}\s*$/.test(firstLine);
-      const firstHasInlineChords = (firstLine.match(/\[[^\]]+\]/g) || []).some((t) =>
-        isChord(t.slice(1, -1))
-      );
-      if (
-        !isDirective &&
-        !firstHasInlineChords &&
-        !isTabLine(firstLine) &&
-        !isChordLine(firstLine) &&
-        firstLine.length <= 95 &&
-        trimmedChunk.length > 1
-      ) {
-        title = firstLine.replace(/^\d+\s*[.)\-–—]\s*/, '').trim() || `Tema ${num}`;
-        bodyLines = trimmedChunk.slice(1);
+      for (const block of subBlocks) {
+        const built = buildSongFromChunk(block, `Tema ${songs.length + 1}`);
+        if (!built) continue;
+        songs.push({
+          id: uid(),
+          number: String(songs.length + 1),
+          title: built.title,
+          body: built.body,
+        });
       }
-
-      const normalized = normalize(bodyLines.join('\n'), title);
-      if (!normalized.body || !hasMusicContent(normalized.body)) continue;
-
-      songs.push({
-        id: uid(),
-        number: num,
-        title: normalized.title || `Tema ${num}`,
-        body: normalized.body,
-      });
     }
 
     if (songs.length >= 2) {
@@ -179,8 +248,11 @@ export function parseMultiImport(raw, fallbackTitle = '') {
     }
   }
 
-  // Fallback de 1 sola canción (usa el texto ya limpio de guiones de índice).
-  const single = normalize(cleanLines.join('\n'), fallbackTitle);
+  // Fallback de 1 sola canción (usa el texto ya limpio de índice).
+  const single = normalize(
+    cleanLines.map((l) => l.trimEnd()).join('\n'),
+    fallbackTitle
+  );
   if (!single.body || !hasMusicContent(single.body)) {
     return { songs: [], removedIndexLines };
   }

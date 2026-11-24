@@ -69,7 +69,7 @@ export function BatchImportScreen({ c, songs, removedIndexLines, onBack, onCommi
           <Ionicons name="sparkles-outline" size={17} color={c.accent} />
           <Text style={[styles.infoText, { color: c.fg }]}>
             Se limpiaron automáticamente {removedIndexLines}{' '}
-            {removedIndexLines === 1 ? 'línea de índice' : 'líneas de índice'} con guiones.
+            {removedIndexLines === 1 ? 'línea de índice' : 'líneas de índice'}.
           </Text>
         </View>
       ) : null}

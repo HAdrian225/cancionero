@@ -17,6 +17,7 @@ import {
   InstallPromptModal,
   detectWebInstallEnvironment,
 } from './src/components/InstallPromptModal';
+import { PdfGuideModal } from './src/components/PdfGuideModal';
 import { ActionSheetModal, RenameModal } from './src/components/UI';
 import { GroupScreen } from './src/screens/GroupScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -72,6 +73,7 @@ function MainApp() {
   const [draft, setDraft] = useState({ title: '', body: '', versionName: '' });
   const [prompt, setPrompt] = useState(null); // { label, value, onOk }
   const [sheet, setSheet] = useState(null); // { title, message?, actions?, cancelLabel? }
+  const [pdfGuideOpen, setPdfGuideOpen] = useState(false);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [deferredInstallEvent, setDeferredInstallEvent] = useState(null);
   const [n, setN] = useState(0);
@@ -525,7 +527,27 @@ function MainApp() {
       const mime = (a.mimeType || '').toLowerCase();
 
       if (/\.pdf$/i.test(fileName) || mime === 'application/pdf') {
-        notify('PDF no soportado', 'Por ahora solo archivos de texto (.txt, .cho, .pro, .crd).');
+        setSheet({
+          title: 'PDF no soportado directamente',
+          message:
+            'Cancionero acepta archivos de texto (.txt, .cho, .pro, .crd) para mantenerse liviana y offline. Te mostramos cómo pasarlo en 15 segundos.',
+          actions: [
+            {
+              label: 'Ver guía paso a paso',
+              icon: 'help-circle-outline',
+              primary: true,
+              onPress: () => setPdfGuideOpen(true),
+            },
+            {
+              label: 'Pegar texto copiado',
+              icon: 'clipboard-outline',
+              onPress: () => {
+                setDraft({ title: targetGroup?.title || '', body: '', versionName: '' });
+                setView('paste');
+              },
+            },
+          ],
+        });
         return;
       }
       if (BLOCKED_MIME_PREFIXES.some((p) => mime.startsWith(p))) {
@@ -661,6 +683,7 @@ function MainApp() {
           setDraft({ title: targetGroup?.title || '', body: '', versionName: '' });
           setView('paste');
         }}
+        onOpenPdfGuide={() => setPdfGuideOpen(true)}
       />
     );
   } else if (view === 'paste') {
@@ -741,6 +764,15 @@ function MainApp() {
         }}
       />
       <ActionSheetModal c={c} sheet={sheet} onClose={() => setSheet(null)} />
+      <PdfGuideModal
+        c={c}
+        visible={pdfGuideOpen}
+        onClose={() => setPdfGuideOpen(false)}
+        onGoPaste={() => {
+          setDraft({ title: targetGroup?.title || '', body: '', versionName: '' });
+          setView('paste');
+        }}
+      />
       <InstallPromptModal
         c={c}
         visible={installPromptVisible}

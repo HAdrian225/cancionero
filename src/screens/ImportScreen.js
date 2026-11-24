@@ -32,7 +32,7 @@ function OptionCard({ c, icon, title, subtitle, onPress }) {
   );
 }
 
-export function ImportScreen({ c, targetGroup, onBack, onPickFile, onPaste }) {
+export function ImportScreen({ c, targetGroup, onBack, onPickFile, onPaste, onOpenPdfGuide }) {
   return (
     <Screen c={c}>
       <HeaderBar left={<BackButton c={c} label="Volver" onPress={onBack} />} />
@@ -64,6 +64,36 @@ export function ImportScreen({ c, targetGroup, onBack, onPickFile, onPaste }) {
           onPress={onPaste}
         />
       </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Ver guía para convertir archivos PDF"
+        onPress={() => {
+          hapticLight();
+          onOpenPdfGuide?.();
+        }}
+        style={({ pressed }) => [
+          styles.guideCard,
+          {
+            backgroundColor: c.surfaceAlt,
+            borderColor: c.line,
+          },
+          pressed && styles.optionPressed,
+        ]}
+      >
+        <View style={[styles.guideBadge, { backgroundColor: c.surface }]}>
+          <Ionicons name="help-circle-outline" size={20} color={c.accent} />
+        </View>
+        <View style={styles.optionBody}>
+          <Text style={[styles.guideTitle, { color: c.fg }]}>
+            ¿Tenés un PDF? Cómo pasarlo a texto
+          </Text>
+          <Text style={[styles.optionSub, { color: c.sub }]}>
+            Guía rápida para iPhone y Android sin instalar nada
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={c.sub} />
+      </Pressable>
 
       <View style={[styles.noteCard, { backgroundColor: c.surfaceAlt }]}>
         <Ionicons name="phone-portrait-outline" size={18} color={c.sub} />
@@ -127,12 +157,33 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   noteCard: {
-    marginTop: 22,
+    marginTop: 14,
     borderRadius: 14,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
+  },
+  guideCard: {
+    marginTop: 18,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  guideBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  guideTitle: {
+    fontSize: 15,
+    fontWeight: '600',
   },
   noteText: {
     flex: 1,

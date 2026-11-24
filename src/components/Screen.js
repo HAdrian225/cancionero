@@ -9,15 +9,31 @@ export function getBottomInsetPadding(insetsBottom, minPad = 14) {
   return Math.max(insetsBottom, minPad);
 }
 
-// Contenedor base con insets reales de iOS/Android y CSS env() para PWA en iPhone Safari,
-// más sangría lateral anti-vidrio templado (H_INSET = 22 pt) y centrado limpio en pantallas anchas.
+function isWebIOSStandalone() {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return false;
+  const nav = window.navigator || {};
+  const ua = nav.userAgent || '';
+  const isIOS =
+    /iPad|iPhone|iPod/.test(ua) || (nav.platform === 'MacIntel' && (nav.maxTouchPoints || 0) > 1);
+  const standalone =
+    Boolean(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    nav.standalone === true;
+  return isIOS && standalone;
+}
+
+// Contenedor base con insets reales de iOS/Android y CSS env() para PWA en iPhone Safari.
+// Da aire generoso arriba (+22 pt extra sobre la Dynamic Island) para que el blur superior
+// nunca tape el header ni el botón Volver, y mantiene la sangría lateral anti-templado (22 pt).
 export function Screen({ c, children, keyboardAvoiding = false, noHorizontalInset = false }) {
   const insets = useSafeAreaInsets();
+  const iosPwa = isWebIOSStandalone();
 
   const paddingStyle =
     Platform.OS === 'web'
       ? {
-          paddingTop: 'max(calc(env(safe-area-inset-top, 0px) + 10px), 12px)',
+          paddingTop: iosPwa
+            ? 'max(calc(env(safe-area-inset-top, 0px) + 22px), 74px)'
+            : 'max(calc(env(safe-area-inset-top, 0px) + 22px), 24px)',
           paddingBottom: getBottomInsetPadding(0, 14),
           paddingLeft: noHorizontalInset
             ? 'env(safe-area-inset-left, 0px)'
@@ -27,7 +43,7 @@ export function Screen({ c, children, keyboardAvoiding = false, noHorizontalInse
             : `calc(env(safe-area-inset-right, 0px) + ${H_INSET}px)`,
         }
       : {
-          paddingTop: insets.top + 6,
+          paddingTop: insets.top + 18,
           paddingBottom: Math.max(insets.bottom, 14),
           paddingLeft: noHorizontalInset ? insets.left : insets.left + H_INSET,
           paddingRight: noHorizontalInset ? insets.right : insets.right + H_INSET,

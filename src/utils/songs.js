@@ -66,7 +66,7 @@ export function extractChords(body, semitones = 0) {
   return [
     ...new Set(
       lines
-        .filter(isChordLine)
+        .filter((l) => !isTabLine(l) && isChordLine(l))
         .flatMap((l) => transposeChordLine(l, semitones).trim().split(/\s+/))
         .filter(isChord)
     ),
@@ -77,8 +77,51 @@ export function getFirstLyricSnippet(body) {
   const line = body
     .split('\n')
     .map((l) => l.trim())
-    .find((l) => l.length > 0 && !isChordLine(l));
+    .find((l) => l.length > 0 && !isTabLine(l) && !isChordLine(l));
   return line || '';
+}
+
+// Detecta líneas de tablatura estilo LaCuerda.net / CifraClub:
+// cuerdas por nota (e|...|) o número (1|...|..6|...|), repeticiones (|:, :|), técnicas (h/p/r/t/s/b/x/^/~/*/+/.).
+const TAB_LINE_RE =
+  /^\s*(?:[a-gA-G][#b]?|[1-6])\s*\|[:\-0-9hpHrPtTbBsS\/\\~xX^()v<>*.+=| ]{3,}\|?\s*$/;
+
+export function isTabLine(line) {
+  return typeof line === 'string' && TAB_LINE_RE.test(line) && line.includes('-');
+}
+
+// Afinación visual de arriba hacia abajo (cuerda más aguda arriba, estándar CifraClub / LaCuerda).
+export const TAB_STRINGS = {
+  Guitarra: ['e', 'B', 'G', 'D', 'A', 'E'],
+  Bajo: ['G', 'D', 'A', 'E'],
+  Ukelele: ['A', 'E', 'C', 'G'],
+  Charango: ['E', 'A', 'E', 'C', 'G'],
+};
+
+// Convierte una grilla [cuerda][paso] en bloque ASCII estilo LaCuerda.net / CifraClub.
+export function formatTabGrid(strings, grid, label = '') {
+  const cols = grid[0]?.length || 0;
+  const colWidths = Array.from({ length: cols }, (_, cIdx) => {
+    let w = 1;
+    for (let r = 0; r < strings.length; r++) {
+      const val = (grid[r]?.[cIdx] || '').trim();
+      if (val.length > w) w = val.length;
+    }
+    return w;
+  });
+
+  const rows = strings.map((str, rIdx) => {
+    const cells = colWidths.map((w, cIdx) => {
+      const val = (grid[rIdx]?.[cIdx] || '').trim();
+      if (!val) return '-'.repeat(w + 2);
+      const padRight = w - val.length + 1;
+      return '-' + val + '-'.repeat(padRight);
+    });
+    return `${str}|${cells.join('')}|`;
+  });
+
+  const cleanLabel = label.trim();
+  return cleanLabel ? `[${cleanLabel}]\n${rows.join('\n')}` : rows.join('\n');
 }
 
 const SHARP_NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -110,6 +153,14 @@ export function buildKeyOptions(originalFirstChord) {
   });
 }
 
+const VALID_BEATS = [2, 3, 4, 6];
+const sanitizeBpm = (val) =>
+  typeof val === 'number' && Number.isFinite(val) && val >= 40 && val <= 240
+    ? Math.round(val)
+    : undefined;
+const sanitizeBeats = (val) =>
+  typeof val === 'number' && VALID_BEATS.includes(val) ? val : undefined;
+
 // Valida un JSON de copia de seguridad ({ groups: [...] } o array directo) y devuelve grupos limpios.
 export function parseBackupPayload(rawText) {
   const parsed = safe(rawText, null);
@@ -127,11 +178,17 @@ export function parseBackupPayload(rawText) {
       title: g.title.trim() || 'Sin título',
       versions: g.versions
         .filter((v) => v && typeof v.body === 'string' && v.body.trim().length > 0)
-        .map((v, idx) => ({
-          id: typeof v.id === 'string' && v.id ? v.id : uid(),
-          name: typeof v.name === 'string' && v.name.trim() ? v.name.trim() : `v${idx + 1}`,
-          body: v.body,
-        })),
+        .map((v, idx) => {
+          const bpm = sanitizeBpm(v.bpm);
+          const beats = sanitizeBeats(v.beats);
+          return {
+            id: typeof v.id === 'string' && v.id ? v.id : uid(),
+            name: typeof v.name === 'string' && v.name.trim() ? v.name.trim() : `v${idx + 1}`,
+            body: v.body,
+            ...(bpm !== undefined ? { bpm } : {}),
+            ...(beats !== undefined ? { beats } : {}),
+          };
+        }),
     }))
     .filter((g) => g.versions.length > 0);
 
@@ -148,7 +205,13 @@ export function mergeBackupGroups(currentGroups, incomingGroups) {
       result.push({
         id: uid(),
         title: inc.title,
-        versions: inc.versions.map((v) => ({ id: uid(), name: v.name, body: v.body })),
+        versions: inc.versions.map((v) => ({
+          id: uid(),
+          name: v.name,
+          body: v.body,
+          ...(typeof v.bpm === 'number' ? { bpm: v.bpm } : {}),
+          ...(typeof v.beats === 'number' ? { beats: v.beats } : {}),
+        })),
       });
       continue;
     }
@@ -161,6 +224,8 @@ export function mergeBackupGroups(currentGroups, incomingGroups) {
         id: uid(),
         name: nameTaken ? nextName(match.versions) : v.name,
         body: v.body,
+        ...(typeof v.bpm === 'number' ? { bpm: v.bpm } : {}),
+        ...(typeof v.beats === 'number' ? { beats: v.beats } : {}),
       });
     }
   }

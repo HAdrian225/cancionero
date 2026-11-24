@@ -4,7 +4,7 @@ import { isChordLine } from '../../transpose';
 import { Screen } from '../components/Screen';
 import { BackButton, Button, HeaderBar } from '../components/UI';
 import { MONO_FONT } from '../theme';
-import { nextName } from '../utils/songs';
+import { isTabLine, nextName } from '../utils/songs';
 
 export function SaveScreen({
   c,
@@ -106,21 +106,24 @@ export function SaveScreen({
         <View style={[styles.previewCard, { backgroundColor: c.surface, borderColor: c.line }]}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View>
-              {previewLines.map((line, i) => (
-                <Text
-                  key={i}
-                  style={[
-                    styles.previewLine,
-                    {
-                      fontFamily: MONO_FONT,
-                      color: isChordLine(line) ? c.chord : c.fg,
-                      fontWeight: isChordLine(line) ? '700' : '400',
-                    },
-                  ]}
-                >
-                  {line || ' '}
-                </Text>
-              ))}
+              {previewLines.map((line, i) => {
+                const isChordRow = !isTabLine(line) && isChordLine(line);
+                return (
+                  <Text
+                    key={i}
+                    style={[
+                      styles.previewLine,
+                      {
+                        fontFamily: MONO_FONT,
+                        color: isChordRow ? c.chord : c.fg,
+                        fontWeight: isChordRow ? '700' : '400',
+                      },
+                    ]}
+                  >
+                    {line || ' '}
+                  </Text>
+                );
+              })}
             </View>
           </ScrollView>
         </View>

@@ -19,6 +19,7 @@ import {
 } from './src/components/InstallPromptModal';
 import { PdfGuideModal } from './src/components/PdfGuideModal';
 import { ActionSheetModal, RenameModal } from './src/components/UI';
+import { EditSongScreen } from './src/screens/EditSongScreen';
 import { GroupScreen } from './src/screens/GroupScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { ImportScreen } from './src/screens/ImportScreen';
@@ -29,6 +30,7 @@ import { DARK, LIGHT, hapticSuccess } from './src/theme';
 import {
   SAMPLE,
   extractChords,
+  isTabLine,
   mergeBackupGroups,
   nextName,
   normalize,
@@ -221,6 +223,32 @@ function MainApp() {
       )
     );
 
+  const updateVersionBody = (g, v, nextBody) => {
+    save(
+      groups.map((x) =>
+        x.id === g.id
+          ? { ...x, versions: x.versions.map((y) => (y.id === v.id ? { ...y, body: nextBody } : y)) }
+          : x
+      )
+    );
+    setChord(null);
+    hapticSuccess();
+    setView('song');
+  };
+
+  const updateVersionTempo = (g, v, bpm, beats) => {
+    save(
+      groups.map((x) =>
+        x.id === g.id
+          ? {
+              ...x,
+              versions: x.versions.map((y) => (y.id === v.id ? { ...y, bpm, beats } : y)),
+            }
+          : x
+      )
+    );
+  };
+
   const confirmDeleteGroup = (g) => {
     setSheet({
       title: `¿Borrar “${g.title}”?`,
@@ -318,6 +346,19 @@ function MainApp() {
       message: g.title,
       actions: [
         {
+          label: 'Editar letra / acordes',
+          icon: 'create-outline',
+          onPress: () => {
+            setGid(g.id);
+            setVid(v.id);
+            setSongOrigin('group');
+            setN(0);
+            setChord(null);
+            setTools(false);
+            setView('edit');
+          },
+        },
+        {
           label: 'Renombrar versión',
           icon: 'pencil-outline',
           onPress: () => renameVersion(g, v),
@@ -334,8 +375,14 @@ function MainApp() {
 
   const openSongMenu = (g, v) => {
     const actions = [
+      {
+        label: 'Editar letra, acordes y tablatura',
+        icon: 'create-outline',
+        primary: true,
+        onPress: () => setView('edit'),
+      },
       { label: 'Renombrar canción', icon: 'pencil-outline', onPress: () => renameGroup(g) },
-      { label: 'Renombrar versión', icon: 'create-outline', onPress: () => renameVersion(g, v) },
+      { label: 'Renombrar versión', icon: 'text-outline', onPress: () => renameVersion(g, v) },
       {
         label: 'Agregar otra versión',
         icon: 'add-circle-outline',
@@ -499,10 +546,10 @@ function MainApp() {
 
   const finishDraft = (raw, fallback) => {
     const d = normalize(raw, fallback);
-    if (!d.body.split('\n').some(isChordLine)) {
+    if (!d.body.split('\n').some((l) => isChordLine(l) || isTabLine(l))) {
       notify(
-        'No encontré acordes',
-        'El texto no parece tener acordes. Revisá el archivo o pegá una canción con acordes arriba o en formato [Am].'
+        'No encontré acordes ni tablatura',
+        'El texto no parece tener acordes ni tablatura. Revisá el archivo o pegá una canción con acordes arriba, formato [Am] o tablatura (e|---|).'
       );
       return;
     }
@@ -670,6 +717,35 @@ function MainApp() {
         onSelectChord={setChord}
         fs={fs}
         onChangeFs={setFs}
+        onSaveTempo={(bpm, beats) => updateVersionTempo(group, version, bpm, beats)}
+      />
+    );
+  } else if (view === 'edit' && group && version) {
+    screen = (
+      <EditSongScreen
+        c={c}
+        group={group}
+        version={version}
+        inst={inst}
+        onBack={(hasChanges) => {
+          if (!hasChanges) {
+            setView('song');
+            return;
+          }
+          setSheet({
+            title: '¿Descartar cambios?',
+            message: 'Si salís ahora se perderán las modificaciones que hiciste en esta canción.',
+            actions: [
+              {
+                label: 'Descartar cambios',
+                icon: 'trash-outline',
+                destructive: true,
+                onPress: () => setView('song'),
+              },
+            ],
+          });
+        }}
+        onSave={(nextBody) => updateVersionBody(group, version, nextBody)}
       />
     );
   } else if (view === 'import') {

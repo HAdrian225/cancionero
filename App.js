@@ -1,332 +1,768 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Alert, Animated, FlatList, LayoutAnimation, Modal, Platform, Pressable, SafeAreaView, ScrollView,
-  StatusBar, StyleSheet, Text, TextInput, useColorScheme, View,
+  Animated,
+  LayoutAnimation,
+  Platform,
+  Share,
+  StyleSheet,
+  useColorScheme,
+  View,
 } from 'react-native';
-import Svg, { Circle, Line, Text as SvgText } from 'react-native-svg';
-import { WebView } from 'react-native-webview';
-import { INSTRUMENTS, voicing } from './chords';
-import { isChord, isChordLine, parseLine, transposeChord, transposeChordLine } from './transpose';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
+import { INSTRUMENTS } from './chords';
+import {
+  InstallPromptModal,
+  detectWebInstallEnvironment,
+} from './src/components/InstallPromptModal';
+import { ActionSheetModal, RenameModal } from './src/components/UI';
+import { GroupScreen } from './src/screens/GroupScreen';
+import { HomeScreen } from './src/screens/HomeScreen';
+import { ImportScreen } from './src/screens/ImportScreen';
+import { PasteScreen } from './src/screens/PasteScreen';
+import { SaveScreen } from './src/screens/SaveScreen';
+import { SongScreen } from './src/screens/SongScreen';
+import { DARK, LIGHT, hapticSuccess } from './src/theme';
+import {
+  SAMPLE,
+  extractChords,
+  mergeBackupGroups,
+  nextName,
+  normalize,
+  parseBackupPayload,
+  safe,
+  uid,
+} from './src/utils/songs';
+import { isChordLine } from './transpose';
 
-const LIGHT = { bg: '#fff', fg: '#111', sub: '#6b7280', line: '#e5e7eb', card: '#f3f4f6', accent: '#2563eb', chord: '#c2410c' };
-const DARK = { bg: '#0b0f17', fg: '#e5e7eb', sub: '#9ca3af', line: '#1f2937', card: '#161c28', accent: '#60a5fa', chord: '#fb923c' };
-const SITES = { CifraClub: 'https://www.cifraclub.com/', LaCuerda: 'https://acordes.lacuerda.net/' };
-// Corre dentro de la página: toma el <pre> más largo (donde ambos sitios ponen letra + acordes).
-const EXTRACT = `(function(){var p=[].slice.call(document.querySelectorAll('pre')).sort(function(a,b){return b.innerText.length-a.innerText.length})[0];
-window.ReactNativeWebView.postMessage(JSON.stringify({title:document.title,text:p?p.innerText:''}));})();true;`;
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+const BLOCKED_MIME_PREFIXES = ['image/', 'video/', 'audio/', 'application/pdf', 'application/zip'];
+const PWA_PROMPT_KEY = 'pwaPrompt';
+const PWA_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
 
-const chordPro = (t) => t.split('\n').map((l) => { const p = parseLine(l); return (p.chords ? p.chords + '\n' : '') + p.lyrics; }).join('\n');
-const uid = () => String(Date.now() + Math.random());
-const safe = (s, d) => { try { return JSON.parse(s) ?? d; } catch { return d; } };
-const nextName = (vs) => 'v' + (Math.max(0, ...vs.map((v) => +(v.name.match(/^v(\d+)$/) || [])[1] || 0)) + 1); // no repite nombres tras borrar
-const SAMPLE = [{ id: 's1', title: 'Cumpleaños feliz', versions: [{ id: 's1a', name: 'v1', body: chordPro('[C]Cumpleaños fe[G]liz, cumpleaños fe[C]liz\nTe de[C7]seamos todos, cumpleaños fe[F]liz\nQue los cum[C]plas fe[G]liz, que los cum[C]plas feliz') }] }];
-
-// Texto crudo (archivo .txt/.cho, texto pegado o página) -> { title, body } con acordes arriba de la letra.
-function normalize(raw, fallbackTitle = '') {
-  let title = fallbackTitle;
-  const lines = raw.replace(/\r/g, '').split('\n').flatMap((l) => {
-    const d = l.match(/^\s*\{\s*(\w+)\s*:?\s*(.*?)\}\s*$/);
-    if (!d) return [l];
-    if (/^(title|t)$/i.test(d[1])) title = d[2] || title;
-    return /^(c|comment|ci)$/i.test(d[1]) ? [d[2]] : []; // los comentarios son contenido visible; el resto de directivas se ignora
-  });
-  let body = lines.join('\n').trim();
-  const inline = body.match(/\[[^\]]+\]/g) || [];
-  if (inline.some((t) => isChord(t.slice(1, -1)))) body = chordPro(body); // ChordPro: [Am] dentro de la letra ("[Intro]" no cuenta)
-  return { title: title.replace(/\s*[-|]\s*(Cifra Club|La ?Cuerda).*$/i, '').trim(), body };
+async function readPickedAssetText(asset) {
+  if (asset.file && typeof asset.file.text === 'function') {
+    return asset.file.text();
+  }
+  let response;
+  try {
+    response = await fetch(asset.uri);
+  } catch {
+    response = await fetch(encodeURI(asset.uri));
+  }
+  return response.text();
 }
 
-export default function App() {
+function MainApp() {
   const sys = useColorScheme();
   const [pref, setPref] = useState(null); // null = seguir al sistema
-  const c = (pref ?? sys) === 'dark' ? DARK : LIGHT;
-  const s = styles(c);
+  const isDark = (pref ?? sys) === 'dark';
+  const c = isDark ? DARK : LIGHT;
 
+  const [ready, setReady] = useState(false);
   const [groups, setGroups] = useState([]);
-  const [view, setView] = useState('home'); // home | group | song | import | web | paste | save
+  const [view, setView] = useState('home'); // home | group | song | import | paste | save
   const [gid, setGid] = useState(null);
   const [vid, setVid] = useState(null);
-  const [target, setTarget] = useState(null); // grupo al que se agrega lo importado (null = por nombre)
-  const [draft, setDraft] = useState({ title: '', body: '' });
+  const [songOrigin, setSongOrigin] = useState('home'); // 'home' | 'group'
+  const [target, setTarget] = useState(null);
+  const [importReturn, setImportReturn] = useState('home');
+  const [draft, setDraft] = useState({ title: '', body: '', versionName: '' });
   const [prompt, setPrompt] = useState(null); // { label, value, onOk }
+  const [sheet, setSheet] = useState(null); // { title, message?, actions?, cancelLabel? }
+  const [installPromptVisible, setInstallPromptVisible] = useState(false);
+  const [deferredInstallEvent, setDeferredInstallEvent] = useState(null);
   const [n, setN] = useState(0);
   const [tools, setTools] = useState(false);
   const [inst, setInst] = useState('Guitarra');
   const [chord, setChord] = useState(null);
-  const [fs, setFs] = useState(13);
-  const [url, setUrl] = useState(SITES.CifraClub);
-  const web = useRef();
-  const fade = useRef(new Animated.Value(0)).current;
+  const [fs, setFs] = useState(14);
+  const fade = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    AsyncStorage.multiGet(['groups', 'songs', 'theme', 'inst']).then(([[, g], [, old], [, t], [, i]]) => {
-      // Migración: versión anterior guardaba canciones sueltas en 'songs'.
-      const oldList = safe(old, null);
-      const list = safe(g, null) ?? (oldList ? oldList.map((x) => ({ id: x.id, title: x.title, versions: [{ id: uid(), name: 'v1', body: x.body }] })) : SAMPLE);
-      setGroups(list);
-      if (!g) AsyncStorage.setItem('groups', JSON.stringify(list)); // persiste la migración (ids estables)
-      if (t) setPref(t);
-      if (i && INSTRUMENTS[i]) setInst(i);
-    });
+    AsyncStorage.multiGet(['groups', 'songs', 'theme', 'inst'])
+      .then(([[, g], [, old], [, t], [, i]]) => {
+        const parsedGroups = safe(g, null);
+        const parsedOld = safe(old, null);
+        const validGroups = Array.isArray(parsedGroups) ? parsedGroups : null;
+        const validOld = Array.isArray(parsedOld) ? parsedOld : null;
+
+        const list =
+          validGroups ??
+          (validOld
+            ? validOld.map((x) => ({
+                id: x.id,
+                title: x.title,
+                versions: [{ id: uid(), name: 'v1', body: x.body }],
+              }))
+            : SAMPLE);
+
+        setGroups(list);
+        if (!validGroups) AsyncStorage.setItem('groups', JSON.stringify(list));
+        if (t === 'light' || t === 'dark') setPref(t);
+        if (i && INSTRUMENTS[i]) setInst(i);
+      })
+      .finally(() => setReady(true));
   }, []);
-  useEffect(() => { // transición corta al cambiar de pantalla (< 400 ms)
+
+  // Sincroniza el color de la barra de Safari/Chrome con el tema activo en Web/PWA.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    document.body.style.backgroundColor = c.bg;
+    document.documentElement.style.backgroundColor = c.bg;
+    let meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute('name', 'theme-color');
+      document.head.appendChild(meta);
+    }
+    meta.setAttribute('content', c.bg);
+  }, [c.bg]);
+
+  // Escucha el evento nativo de instalación en Android/Chrome y muestra el popup de bienvenida en Web.
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const { isStandalone } = detectWebInstallEnvironment();
+    if (isStandalone) return;
+
+    const onBeforeInstall = (e) => {
+      e.preventDefault();
+      setDeferredInstallEvent(e);
+    };
+    const onInstalled = () => {
+      setDeferredInstallEvent(null);
+      setInstallPromptVisible(false);
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('appinstalled', onInstalled);
+
+    let timer = null;
+    AsyncStorage.getItem(PWA_PROMPT_KEY).then((val) => {
+      if (val === 'never') return;
+      const last = Number(val);
+      if (last && Date.now() - last < PWA_SNOOZE_MS) return;
+      timer = setTimeout(() => setInstallPromptVisible(true), 4000);
+    });
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  useEffect(() => {
     fade.setValue(0);
-    Animated.timing(fade, { toValue: 1, duration: 220, useNativeDriver: true }).start();
-  }, [view]);
+    Animated.timing(fade, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
+  }, [view, fade]);
 
-  const save = (list) => { setGroups(list); AsyncStorage.setItem('groups', JSON.stringify(list)); };
-  const go = (v) => setView(v);
-  const toggleTheme = () => { const next = (pref ?? sys) === 'dark' ? 'light' : 'dark'; setPref(next); AsyncStorage.setItem('theme', next); };
-  const toggleTools = () => { LayoutAnimation.configureNext(LayoutAnimation.Presets.spring); setTools(!tools); };
-  const pickInst = (i) => { setInst(i); AsyncStorage.setItem('inst', i); };
+  const notify = (title, message) => setSheet({ title, message, actions: [] });
 
-  const group = groups.find((g) => g.id === gid);
-  const version = group?.versions.find((v) => v.id === vid);
-  const rename = (label, value, onOk) => setPrompt({ label, value, onOk });
-  const renameGroup = (g) => rename('Nombre de la canción', g.title, (t) => save(groups.map((x) => (x.id === g.id ? { ...x, title: t } : x))));
-  const renameVersion = (g, v) => rename('Nombre de la versión', v.name, (t) =>
-    save(groups.map((x) => (x.id === g.id ? { ...x, versions: x.versions.map((y) => (y.id === v.id ? { ...y, name: t } : y)) } : x))));
-  const actions = (title, onRename, onDelete) =>
-    Alert.alert(title, undefined, [{ text: 'Renombrar', onPress: onRename }, { text: 'Borrar', style: 'destructive', onPress: onDelete }, { text: 'Cancelar', style: 'cancel' }]);
+  const save = (list) => {
+    setGroups(list);
+    AsyncStorage.setItem('groups', JSON.stringify(list));
+  };
 
-  const startImport = (t = null) => { setTarget(t); go('import'); };
+  const toggleTheme = () => {
+    const next = isDark ? 'light' : 'dark';
+    setPref(next);
+    AsyncStorage.setItem('theme', next);
+  };
+
+  const toggleTools = () => {
+    if (Platform.OS !== 'web') {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    }
+    setTools((prev) => !prev);
+  };
+
+  const pickInst = (i) => {
+    setInst(i);
+    AsyncStorage.setItem('inst', i);
+  };
+
+  const group = groups.find((g) => g.id === gid) || null;
+  const version = group?.versions.find((v) => v.id === vid) || null;
+  const targetGroup = target ? groups.find((g) => g.id === target) || null : null;
+
+  const handleChangeN = (nextN) => {
+    if (chord && version) {
+      const prevChords = extractChords(version.body, n);
+      const nextChords = extractChords(version.body, nextN);
+      const idx = prevChords.indexOf(chord);
+      setChord(idx >= 0 && idx < nextChords.length ? nextChords[idx] : null);
+    }
+    setN(nextN);
+  };
+
+  const openRename = (label, value, onOk) => setPrompt({ label, value, onOk });
+
+  const renameGroup = (g) =>
+    openRename('Nombre de la canción', g.title, (t) =>
+      save(groups.map((x) => (x.id === g.id ? { ...x, title: t } : x)))
+    );
+
+  const renameVersion = (g, v) =>
+    openRename('Nombre de la versión', v.name, (t) =>
+      save(
+        groups.map((x) =>
+          x.id === g.id
+            ? { ...x, versions: x.versions.map((y) => (y.id === v.id ? { ...y, name: t } : y)) }
+            : x
+        )
+      )
+    );
+
+  const confirmDeleteGroup = (g) => {
+    setSheet({
+      title: `¿Borrar “${g.title}”?`,
+      message:
+        g.versions.length > 1
+          ? `Se eliminarán sus ${g.versions.length} versiones de este dispositivo.`
+          : 'Esta acción no se puede deshacer.',
+      actions: [
+        {
+          label: 'Borrar canción',
+          icon: 'trash-outline',
+          destructive: true,
+          onPress: () => {
+            save(groups.filter((x) => x.id !== g.id));
+            if (gid === g.id) {
+              setGid(null);
+              setVid(null);
+              setView('home');
+            }
+          },
+        },
+      ],
+    });
+  };
+
+  const confirmDeleteVersion = (g, v) => {
+    const isLast = g.versions.length <= 1;
+    setSheet({
+      title: isLast ? `¿Borrar “${g.title}”?` : `¿Borrar la versión “${v.name}”?`,
+      message: isLast
+        ? 'Es la única versión; se borrará la canción completa.'
+        : 'Esta acción no se puede deshacer.',
+      actions: [
+        {
+          label: isLast ? 'Borrar canción' : 'Borrar versión',
+          icon: 'trash-outline',
+          destructive: true,
+          onPress: () => {
+            const left = g.versions.filter((x) => x.id !== v.id);
+            if (left.length) {
+              save(groups.map((x) => (x.id === g.id ? { ...x, versions: left } : x)));
+              if (view === 'song' && vid === v.id) {
+                setN(0);
+                setChord(null);
+                setTools(false);
+                if (left.length === 1 && songOrigin === 'home') {
+                  setVid(left[0].id);
+                } else {
+                  setVid(null);
+                  setView('group');
+                }
+              }
+            } else {
+              save(groups.filter((x) => x.id !== g.id));
+              setGid(null);
+              setVid(null);
+              setView('home');
+            }
+          },
+        },
+      ],
+    });
+  };
+
+  const startImport = (targetId = null, returnView = 'home') => {
+    setTarget(targetId);
+    setImportReturn(returnView);
+    setView('import');
+  };
+
+  const openGroupMenu = (g) => {
+    setSheet({
+      title: g.title,
+      message: g.versions.length === 1 ? '1 versión' : `${g.versions.length} versiones`,
+      actions: [
+        { label: 'Renombrar canción', icon: 'pencil-outline', onPress: () => renameGroup(g) },
+        {
+          label: 'Agregar versión',
+          icon: 'add-circle-outline',
+          onPress: () => startImport(g.id, 'home'),
+        },
+        {
+          label: 'Borrar canción',
+          icon: 'trash-outline',
+          destructive: true,
+          onPress: () => confirmDeleteGroup(g),
+        },
+      ],
+    });
+  };
+
+  const openVersionMenu = (g, v) => {
+    setSheet({
+      title: v.name,
+      message: g.title,
+      actions: [
+        {
+          label: 'Renombrar versión',
+          icon: 'pencil-outline',
+          onPress: () => renameVersion(g, v),
+        },
+        {
+          label: 'Borrar versión',
+          icon: 'trash-outline',
+          destructive: true,
+          onPress: () => confirmDeleteVersion(g, v),
+        },
+      ],
+    });
+  };
+
+  const openSongMenu = (g, v) => {
+    const actions = [
+      { label: 'Renombrar canción', icon: 'pencil-outline', onPress: () => renameGroup(g) },
+      { label: 'Renombrar versión', icon: 'create-outline', onPress: () => renameVersion(g, v) },
+      {
+        label: 'Agregar otra versión',
+        icon: 'add-circle-outline',
+        onPress: () => startImport(g.id, 'song'),
+      },
+    ];
+    if (g.versions.length > 1) {
+      actions.push({
+        label: `Ver las ${g.versions.length} versiones`,
+        icon: 'layers-outline',
+        onPress: () => setView('group'),
+      });
+    }
+    actions.push({
+      label: g.versions.length > 1 ? 'Borrar esta versión' : 'Borrar canción',
+      icon: 'trash-outline',
+      destructive: true,
+      onPress: () => confirmDeleteVersion(g, v),
+    });
+    setSheet({ title: g.title, message: `Versión ${v.name}`, actions });
+  };
+
+  const exportBackup = async () => {
+    const payload = JSON.stringify(
+      { version: 1, exportedAt: new Date().toISOString(), groups },
+      null,
+      2
+    );
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+      try {
+        const blob = new Blob([payload], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `cancionero-respaldo-${dateStamp}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        hapticSuccess();
+        notify(
+          'Respaldo descargado',
+          `Guardamos tus ${groups.length} canciones en cancionero-respaldo-${dateStamp}.json.`
+        );
+      } catch {
+        notify('No pude exportar el respaldo', 'Probá nuevamente desde tu navegador.');
+      }
+      return;
+    }
+
+    try {
+      await Share.share({
+        title: `Respaldo Cancionero (${dateStamp})`,
+        message: payload,
+      });
+    } catch {
+      notify('No pude compartir el respaldo', 'Probá nuevamente en unos segundos.');
+    }
+  };
+
+  const importBackup = async () => {
+    try {
+      const r = await DocumentPicker.getDocumentAsync({
+        type: Platform.OS === 'web' ? 'application/json,.json' : '*/*',
+        copyToCacheDirectory: true,
+      });
+      if (r.canceled || !r.assets?.length) return;
+      const a = r.assets[0];
+      if (typeof a.size === 'number' && a.size > MAX_IMPORT_BYTES * 3) {
+        notify('Archivo muy grande', 'El archivo de respaldo supera los 6 MB.');
+        return;
+      }
+      const raw = await readPickedAssetText(a);
+      const incoming = parseBackupPayload(raw);
+      if (!incoming) {
+        notify(
+          'Respaldo inválido',
+          'No reconocimos canciones válidas en ese archivo .json.'
+        );
+        return;
+      }
+
+      const countText =
+        incoming.length === 1 ? '1 canción' : `${incoming.length} canciones`;
+
+      setSheet({
+        title: `Importar ${countText}`,
+        message: 'Elegí si querés sumarlas a tu cancionero actual o reemplazar todo.',
+        actions: [
+          {
+            label: 'Sumar a mis canciones',
+            icon: 'add-circle-outline',
+            primary: true,
+            onPress: () => {
+              const merged = mergeBackupGroups(groups, incoming);
+              save(merged);
+              hapticSuccess();
+              notify('Respaldo importado', `Tu cancionero ahora tiene ${merged.length} canciones.`);
+            },
+          },
+          {
+            label: 'Reemplazar todo',
+            icon: 'refresh-outline',
+            destructive: true,
+            onPress: () => {
+              save(incoming);
+              setGid(null);
+              setVid(null);
+              setView('home');
+              hapticSuccess();
+              notify('Cancionero restaurado', `Se cargaron ${countText} desde el respaldo.`);
+            },
+          },
+        ],
+      });
+    } catch {
+      notify('No pude leer el respaldo', 'Revisá que sea un archivo .json exportado desde Cancionero.');
+    }
+  };
+
+  const openAppMenu = () => {
+    const { isWeb, isStandalone } = detectWebInstallEnvironment();
+    const actions = [];
+    if (isWeb && !isStandalone) {
+      actions.push({
+        label: 'Agregar a pantalla de inicio',
+        icon: 'phone-portrait-outline',
+        primary: true,
+        onPress: () => setInstallPromptVisible(true),
+      });
+    }
+    actions.push(
+      {
+        label: 'Exportar respaldo (.json)',
+        icon: 'download-outline',
+        onPress: exportBackup,
+      },
+      {
+        label: 'Importar respaldo (.json)',
+        icon: 'push-outline',
+        onPress: importBackup,
+      }
+    );
+    setSheet({
+      title: 'Cancionero',
+      message: 'Tus canciones se guardan en este dispositivo. Exportá un respaldo cuando quieras.',
+      actions,
+    });
+  };
+
+  const openSong = (g, v, origin) => {
+    setGid(g.id);
+    setVid(v.id);
+    setSongOrigin(origin);
+    setN(0);
+    setChord(null);
+    setTools(false);
+    setView('song');
+  };
+
   const finishDraft = (raw, fallback) => {
     const d = normalize(raw, fallback);
-    if (!d.body.split('\n').some(isChordLine)) return Alert.alert('No encontré acordes', 'El texto no parece tener acordes. Revisá el archivo o abrí una canción completa.');
-    setDraft({ title: d.title, body: d.body }); go('save');
+    if (!d.body.split('\n').some(isChordLine)) {
+      notify(
+        'No encontré acordes',
+        'El texto no parece tener acordes. Revisá el archivo o pegá una canción con acordes arriba o en formato [Am].'
+      );
+      return;
+    }
+    const defaultVersion = targetGroup ? nextName(targetGroup.versions) : 'v1';
+    setDraft({
+      title: targetGroup ? targetGroup.title : d.title,
+      body: d.body,
+      versionName: defaultVersion,
+    });
+    setView('save');
   };
-  const pickFile = async () => {
-    const r = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
-    if (r.canceled) return;
-    const a = r.assets[0];
-    if (/\.pdf$/i.test(a.name)) return Alert.alert('PDF no soportado', 'Por ahora solo archivos de texto (.txt, .cho, .pro, .crd).');
-    try { finishDraft(await (await fetch(a.uri)).text(), a.name.replace(/\.[^.]+$/, '')); }
-    catch { Alert.alert('No pude leer el archivo'); }
-  };
-  const onWeb = (e) => { const m = JSON.parse(e.nativeEvent.data); finishDraft(m.text, m.title); };
 
-  const name = draft.title.trim();
-  const existing = target ? groups.find((g) => g.id === target) : groups.find((g) => g.title.toLowerCase() === name.toLowerCase());
+  const pickFile = async () => {
+    try {
+      const r = await DocumentPicker.getDocumentAsync({
+        type: Platform.OS === 'web' ? 'text/*,.txt,.cho,.pro,.crd,.chopro' : '*/*',
+        copyToCacheDirectory: true,
+      });
+      if (r.canceled || !r.assets?.length) return;
+      const a = r.assets[0];
+      const fileName = a.name || '';
+      const mime = (a.mimeType || '').toLowerCase();
+
+      if (/\.pdf$/i.test(fileName) || mime === 'application/pdf') {
+        notify('PDF no soportado', 'Por ahora solo archivos de texto (.txt, .cho, .pro, .crd).');
+        return;
+      }
+      if (BLOCKED_MIME_PREFIXES.some((p) => mime.startsWith(p))) {
+        notify('Archivo no soportado', 'Elegí un archivo de texto plano (.txt, .cho, .pro, .crd).');
+        return;
+      }
+      if (typeof a.size === 'number' && a.size > MAX_IMPORT_BYTES) {
+        notify('Archivo muy grande', 'El archivo supera los 2 MB. Elegí un archivo de texto con acordes.');
+        return;
+      }
+
+      const text = await readPickedAssetText(a);
+      finishDraft(text, targetGroup?.title || fileName.replace(/\.[^.]+$/, ''));
+    } catch {
+      notify('No pude leer el archivo', 'Probá con otro archivo de texto o pegando el contenido.');
+    }
+  };
+
+  const effectiveTitle = draft.title.trim() || 'Sin título';
+  const existing = targetGroup
+    ? targetGroup
+    : groups.find((g) => g.title.toLowerCase() === effectiveTitle.toLowerCase());
+
   const commitDraft = () => {
     const body = draft.body;
+    hapticSuccess();
     if (existing) {
-      const v = { id: uid(), name: nextName(existing.versions), body };
-      save(groups.map((g) => (g === existing ? { ...g, versions: [...g.versions, v] } : g)));
+      const customVersion = targetGroup ? draft.versionName?.trim() : '';
+      const v = { id: uid(), name: customVersion || nextName(existing.versions), body };
+      save(groups.map((g) => (g.id === existing.id ? { ...g, versions: [...g.versions, v] } : g)));
       setGid(existing.id);
+      setVid(v.id);
+      setTarget(null);
+      setView('group');
     } else {
-      const g = { id: uid(), title: name || 'Sin título', versions: [{ id: uid(), name: 'v1', body }] };
-      save([...groups, g]); setGid(g.id);
+      const firstVersion = { id: uid(), name: 'v1', body };
+      const g = { id: uid(), title: effectiveTitle, versions: [firstVersion] };
+      save([...groups, g]);
+      setTarget(null);
+      openSong(g, firstVersion, 'home');
     }
-    go('group');
   };
 
-  const Back = ({ to, label }) => <Btn s={s} flat label={`‹ ${label}`} onPress={() => go(to)} />;
-  let body;
+  const handleInstallNative = async () => {
+    if (!deferredInstallEvent) {
+      setInstallPromptVisible(false);
+      return;
+    }
+    try {
+      await deferredInstallEvent.prompt();
+      await deferredInstallEvent.userChoice;
+    } catch {
+      // Ignora cancelación del navegador
+    }
+    setDeferredInstallEvent(null);
+    setInstallPromptVisible(false);
+    AsyncStorage.setItem(PWA_PROMPT_KEY, String(Date.now()));
+  };
 
-  if (view === 'home')
-    body = (
-      <>
-        <View style={s.head}><Text style={s.h1}>Cancionero</Text>
-          <Btn s={s} flat label={c === DARK ? '☀️' : '🌙'} onPress={toggleTheme} /></View>
-        <FlatList data={groups} keyExtractor={(g) => g.id}
-          ListEmptyComponent={<Text style={s.sub}>Sin canciones. Tocá “Importar”.</Text>}
-          renderItem={({ item: g }) => (
-            <Pressable style={s.row}
-              onPress={() => { setGid(g.id); if (g.versions.length === 1) { setVid(g.versions[0].id); setN(0); setChord(null); go('song'); } else go('group'); }}
-              onLongPress={() => actions(g.title, () => renameGroup(g), () => save(groups.filter((x) => x.id !== g.id)))}>
-              <Text style={s.rowTitle}>{g.title}</Text>
-              <Text style={s.sub}>{g.versions.length} {g.versions.length === 1 ? 'versión' : 'versiones'}</Text>
-            </Pressable>)} />
-        <Btn s={s} label="+ Importar canción" onPress={() => startImport()} />
-      </>
+  const handleInstallLater = () => {
+    setInstallPromptVisible(false);
+    AsyncStorage.setItem(PWA_PROMPT_KEY, String(Date.now()));
+  };
+
+  const handleInstallNever = () => {
+    setInstallPromptVisible(false);
+    AsyncStorage.setItem(PWA_PROMPT_KEY, 'never');
+  };
+
+  let screen = null;
+
+  if (view === 'home') {
+    screen = (
+      <HomeScreen
+        c={c}
+        groups={groups}
+        loading={!ready}
+        isDark={isDark}
+        onToggleTheme={toggleTheme}
+        onOpenAppMenu={openAppMenu}
+        onOpenGroup={(g) => {
+          setGid(g.id);
+          setView('group');
+        }}
+        onOpenSongDirect={(g, v) => openSong(g, v, 'home')}
+        onGroupMenu={openGroupMenu}
+        onImport={() => startImport(null, 'home')}
+      />
     );
-
-  if (view === 'group' && group)
-    body = (
-      <>
-        <Back to="home" label="Canciones" />
-        <View style={s.head}><Text style={s.h1}>{group.title}</Text><Btn s={s} flat label="✎" onPress={() => renameGroup(group)} /></View>
-        <FlatList data={group.versions} keyExtractor={(v) => v.id}
-          renderItem={({ item: v }) => (
-            <Pressable style={s.row} onPress={() => { setVid(v.id); setN(0); setChord(null); go('song'); }}
-              onLongPress={() => actions(v.name, () => renameVersion(group, v), () => {
-                const left = group.versions.filter((x) => x.id !== v.id);
-                if (left.length) save(groups.map((g) => (g === group ? { ...g, versions: left } : g)));
-                else { save(groups.filter((g) => g !== group)); go('home'); }
-              })}>
-              <Text style={s.rowTitle}>{v.name}</Text><Text style={s.sub}>mantené apretado para renombrar</Text>
-            </Pressable>)} />
-        <Btn s={s} label="+ Agregar versión" onPress={() => startImport(group.id)} />
-      </>
+  } else if (view === 'group' && group) {
+    screen = (
+      <GroupScreen
+        c={c}
+        group={group}
+        onBack={() => setView('home')}
+        onRenameGroup={() => renameGroup(group)}
+        onDeleteGroup={() => confirmDeleteGroup(group)}
+        onOpenVersion={(v) => openSong(group, v, 'group')}
+        onVersionMenu={(v) => openVersionMenu(group, v)}
+        onAddVersion={() => startImport(group.id, 'group')}
+      />
     );
-
-  if (view === 'song' && version) {
-    const lines = version.body.split('\n');
-    const all = [...new Set(lines.filter(isChordLine).flatMap((l) => transposeChordLine(l, n).trim().split(/\s+/)).filter(isChord))];
-    const first = all[0];
-    const mono = { fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }), fontSize: fs, lineHeight: fs * 1.45 };
-    const v = chord && voicing(chord, inst);
-    body = (
-      <>
-        <View style={s.head}><Back to="group" label={group.title} />
-          <Btn s={s} flat label={tools ? 'Cerrar ✕' : 'Herramientas'} onPress={toggleTools} /></View>
-        <Pressable onLongPress={() => renameVersion(group, version)}><Text style={s.h1}>{version.name}</Text></Pressable>
-        <Text style={s.sub}>{first ? `Tono: ${first}  ·  ` : ''}{n > 0 ? '+' : ''}{n} semitonos</Text>
-        <ScrollView style={{ marginTop: 12, flex: 1 }}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}><View>
-            {lines.map((l, i) => isChordLine(l)
-              ? <Text key={i} style={[mono, { color: c.chord, fontWeight: '700' }]}>
-                  {transposeChordLine(l, n).split(/(\s+)/).map((t, j) => isChord(t) ? <Text key={j} onPress={() => { setChord(t); if (!tools) toggleTools(); }}>{t}</Text> : t)}
-                </Text>
-              : <Text key={i} style={[mono, { color: c.fg }]}>{l || ' '}</Text>)}
-          </View></ScrollView>
-        </ScrollView>
-        {tools && (
-          <View style={s.panel}>
-            <View style={s.seg}>{Object.keys(INSTRUMENTS).map((i) => (
-              <Pressable key={i} style={[s.segItem, inst === i && { backgroundColor: c.accent }]} onPress={() => pickInst(i)}>
-                <Text style={{ color: inst === i ? '#fff' : c.fg, fontSize: 13 }}>{i}</Text></Pressable>))}</View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 10, flexGrow: 0 }}>
-              {all.map((a) => (
-                <Pressable key={a} style={[s.chip, chord === a && { backgroundColor: c.accent }]} onPress={() => setChord(a)}>
-                  <Text style={{ color: chord === a ? '#fff' : c.chord, fontWeight: '700' }}>{a}</Text></Pressable>))}
-            </ScrollView>
-            <View style={s.diagramRow}>
-              {chord ? (v ? <Diagram v={v} ns={INSTRUMENTS[inst].tuning.length} c={c} /> : <Text style={s.sub}>Sin digitación para {chord}</Text>)
-                : <Text style={s.sub}>Tocá un acorde para ver su forma en {inst.toLowerCase()}.</Text>}
-              <View style={{ alignItems: 'center' }}>
-                {chord && <Text style={[s.h1, { color: c.chord }]}>{chord}</Text>}
-                <Text style={s.sub}>Tamaño de letra</Text>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <Btn s={s} small label="A−" onPress={() => setFs(Math.max(10, fs - 1))} />
-                  <Btn s={s} small label="A+" onPress={() => setFs(Math.min(22, fs + 1))} />
-                </View>
-              </View>
-            </View>
-          </View>
-        )}
-        <View style={s.bar}>
-          <Btn s={s} label="−" onPress={() => setN(n - 1)} />
-          <Btn s={s} label="Original" onPress={() => setN(0)} />
-          <Btn s={s} label="+" onPress={() => setN(n + 1)} />
-        </View>
-      </>
+  } else if (view === 'song' && group && version) {
+    const goBackToGroup = songOrigin === 'group' && group.versions.length > 1;
+    screen = (
+      <SongScreen
+        c={c}
+        group={group}
+        version={version}
+        backLabel={goBackToGroup ? group.title : 'Canciones'}
+        onBack={() => setView(goBackToGroup ? 'group' : 'home')}
+        onMenu={() => openSongMenu(group, version)}
+        n={n}
+        onChangeN={handleChangeN}
+        tools={tools}
+        onToggleTools={toggleTools}
+        inst={inst}
+        onPickInst={pickInst}
+        chord={chord}
+        onSelectChord={setChord}
+        fs={fs}
+        onChangeFs={setFs}
+      />
+    );
+  } else if (view === 'import') {
+    screen = (
+      <ImportScreen
+        c={c}
+        targetGroup={targetGroup}
+        onBack={() => setView(importReturn)}
+        onPickFile={pickFile}
+        onPaste={() => {
+          setDraft({ title: targetGroup?.title || '', body: '', versionName: '' });
+          setView('paste');
+        }}
+      />
+    );
+  } else if (view === 'paste') {
+    screen = (
+      <PasteScreen
+        c={c}
+        value={draft.body}
+        onChange={(t) => setDraft((prev) => ({ ...prev, body: t }))}
+        onBack={() => setView('import')}
+        onContinue={() => finishDraft(draft.body, draft.title)}
+      />
+    );
+  } else if (view === 'save') {
+    screen = (
+      <SaveScreen
+        c={c}
+        draft={draft}
+        targetGroup={targetGroup}
+        existing={existing}
+        onChangeTitle={(t) => setDraft((prev) => ({ ...prev, title: t }))}
+        onChangeVersionName={(t) => setDraft((prev) => ({ ...prev, versionName: t }))}
+        onBack={() => setView('import')}
+        onCommit={commitDraft}
+      />
+    );
+  } else {
+    screen = (
+      <HomeScreen
+        c={c}
+        groups={groups}
+        loading={!ready}
+        isDark={isDark}
+        onToggleTheme={toggleTheme}
+        onOpenAppMenu={openAppMenu}
+        onOpenGroup={(g) => {
+          setGid(g.id);
+          setView('group');
+        }}
+        onOpenSongDirect={(g, v) => openSong(g, v, 'home')}
+        onGroupMenu={openGroupMenu}
+        onImport={() => startImport(null, 'home')}
+      />
     );
   }
 
-  if (view === 'import')
-    body = (
-      <>
-        <Back to={target ? 'group' : 'home'} label="Volver" />
-        <Text style={s.h1}>Importar</Text>
-        <Text style={s.sub}>Elegí de dónde traer la canción. Queda guardada en el teléfono.</Text>
-        <View style={{ gap: 12, marginTop: 20 }}>
-          <Btn s={s} label="📄  Archivo del teléfono (.txt, .cho)" onPress={pickFile} />
-          <Btn s={s} label="📋  Pegar texto copiado" onPress={() => { setDraft({ title: '', body: '' }); go('paste'); }} />
-          <Btn s={s} label="🌐  Buscar en CifraClub / LaCuerda" onPress={() => go('web')} />
-        </View>
-      </>
-    );
-
-  if (view === 'paste')
-    body = (
-      <>
-        <Back to="import" label="Importar" />
-        <Text style={s.h1}>Pegar texto</Text>
-        <TextInput style={[s.input, { flex: 1, textAlignVertical: 'top', fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }), fontSize: 12 }]} multiline autoFocus
-          placeholder="Pegá acá la letra con acordes" placeholderTextColor={c.sub} value={draft.body} onChangeText={(t) => setDraft({ ...draft, body: t })} />
-        <Btn s={s} label="Siguiente" onPress={() => finishDraft(draft.body, draft.title)} />
-      </>
-    );
-
-  if (view === 'web')
-    body = (
-      <>
-        <View style={s.head}>
-          <Back to="import" label="Volver" />
-          {Object.entries(SITES).map(([k, u]) => <Btn key={k} s={s} flat label={k} onPress={() => setUrl(u)} />)}
-        </View>
-        <WebView ref={web} source={{ uri: url }} onMessage={onWeb} style={{ flex: 1 }} />
-        <Btn s={s} label="Guardar esta canción" onPress={() => web.current.injectJavaScript(EXTRACT)} />
-      </>
-    );
-
-  if (view === 'save')
-    body = (
-      <>
-        <Back to="import" label="Cancelar" />
-        <Text style={s.h1}>Guardar canción</Text>
-        <Text style={s.sub}>Nombre de la canción</Text>
-        <TextInput style={s.input} value={draft.title} onChangeText={(t) => setDraft({ ...draft, title: t })} placeholder="Ej: Cumpleaños feliz" placeholderTextColor={c.sub} />
-        <Text style={[s.sub, { marginVertical: 12 }]}>
-          {existing ? `Se agregará como ${nextName(existing.versions)} dentro de “${existing.title}”.` : 'Se creará una canción nueva con la versión v1.'}
-        </Text>
-        <Btn s={s} label="Guardar" onPress={commitDraft} />
-      </>
-    );
-
   return (
-    <SafeAreaView style={s.screen}>
-      <StatusBar barStyle={c === DARK ? 'light-content' : 'dark-content'} />
-      <Animated.View style={{ flex: 1, opacity: fade, transform: [{ translateY: fade.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] }}>{body}</Animated.View>
-      <Modal visible={!!prompt} transparent animationType="fade" onRequestClose={() => setPrompt(null)}>
-        <View style={s.modalBg}><View style={s.modal}>
-          <Text style={s.sub}>{prompt?.label}</Text>
-          <TextInput style={s.input} autoFocus value={prompt?.value} onChangeText={(t) => setPrompt({ ...prompt, value: t })} />
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            <Btn s={s} flat label="Cancelar" onPress={() => setPrompt(null)} />
-            <Btn s={s} label="Guardar" onPress={() => { if (prompt.value.trim()) prompt.onOk(prompt.value.trim()); setPrompt(null); }} />
-          </View>
-        </View></View>
-      </Modal>
-    </SafeAreaView>
+    <View style={[styles.animatedRoot, { backgroundColor: c.bg }]}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
+      <Animated.View
+        style={[
+          styles.animatedRoot,
+          {
+            backgroundColor: c.bg,
+            opacity: fade,
+            transform: [
+              {
+                translateY: fade.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [6, 0],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        {screen}
+      </Animated.View>
+      <RenameModal
+        c={c}
+        prompt={prompt}
+        onChange={(t) => setPrompt((prev) => (prev ? { ...prev, value: t } : prev))}
+        onCancel={() => setPrompt(null)}
+        onConfirm={() => {
+          const trimmed = prompt?.value?.trim();
+          if (!trimmed) return;
+          prompt.onOk(trimmed);
+          setPrompt(null);
+        }}
+      />
+      <ActionSheetModal c={c} sheet={sheet} onClose={() => setSheet(null)} />
+      <InstallPromptModal
+        c={c}
+        visible={installPromptVisible}
+        canInstallNative={!!deferredInstallEvent}
+        onInstallNative={handleInstallNative}
+        onLater={handleInstallLater}
+        onNever={handleInstallNever}
+      />
+    </View>
   );
 }
 
-// Botones de mínimo 48 pt (ley de Fitts) y con respuesta visual al tocar.
-const Btn = ({ s, label, onPress, flat, small }) => (
-  <Pressable onPress={onPress} style={({ pressed }) => [flat ? s.flat : small ? s.small : s.btn, pressed && { opacity: 0.6, transform: [{ scale: 0.97 }] }]}>
-    <Text style={flat ? s.flatText : s.btnText}>{label}</Text>
-  </Pressable>
-);
-
-function Diagram({ v, ns, c }) {
-  const W = 130, L = 22, T = 34, gw = (W - 2 * L) / (ns - 1), fh = 22;
-  const x = (i) => L + i * gw;
+export default function App() {
   return (
-    <Svg width={W} height={T + 5 * fh + 10}>
-      {Array.from({ length: 6 }, (_, j) => <Line key={'h' + j} x1={L} x2={W - L} y1={T + j * fh} y2={T + j * fh} stroke={c.sub} strokeWidth={j === 0 && v.base === 1 ? 4 : 1} />)}
-      {Array.from({ length: ns }, (_, i) => <Line key={'s' + i} x1={x(i)} x2={x(i)} y1={T} y2={T + 5 * fh} stroke={c.sub} strokeWidth={1} />)}
-      {v.frets.map((f, i) => f < 0
-        ? <SvgText key={i} x={x(i)} y={T - 10} fontSize={14} fill={c.sub} textAnchor="middle">×</SvgText>
-        : f === 0 ? <Circle key={i} cx={x(i)} cy={T - 13} r={5} stroke={c.sub} strokeWidth={1.5} fill="none" />
-        : <Circle key={i} cx={x(i)} cy={T + (f - v.base + 0.5) * fh} r={8} fill={c.accent} />)}
-      {v.base > 1 && <SvgText x={2} y={T + fh * 0.7} fontSize={11} fill={c.sub}>{v.base}fr</SvgText>}
-    </Svg>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <MainApp />
+    </SafeAreaProvider>
   );
 }
 
-const styles = (c) => StyleSheet.create({
-  screen: { flex: 1, backgroundColor: c.bg, paddingHorizontal: 28, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight + 8 : 12, paddingBottom: 20 },
-  head: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  h1: { fontSize: 24, fontWeight: '700', color: c.fg, marginBottom: 4 },
-  sub: { fontSize: 13, color: c.sub },
-  row: { paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.line, minHeight: 56 },
-  rowTitle: { fontSize: 17, color: c.fg, marginBottom: 2 },
-  btn: { flex: 1, minHeight: 50, backgroundColor: c.accent, borderRadius: 12, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
-  btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  small: { minHeight: 40, minWidth: 48, backgroundColor: c.accent, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  flat: { minHeight: 48, justifyContent: 'center', paddingRight: 8 },
-  flatText: { color: c.accent, fontSize: 16 },
-  bar: { flexDirection: 'row', gap: 10, paddingTop: 10 },
-  panel: { backgroundColor: c.card, borderRadius: 14, padding: 12, marginTop: 8 },
-  seg: { flexDirection: 'row', backgroundColor: c.bg, borderRadius: 10, padding: 3 },
-  segItem: { flex: 1, minHeight: 36, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  chip: { minHeight: 40, minWidth: 48, paddingHorizontal: 12, marginRight: 8, borderRadius: 10, backgroundColor: c.bg, alignItems: 'center', justifyContent: 'center' },
-  diagramRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', minHeight: 150 },
-  input: { backgroundColor: c.card, color: c.fg, borderRadius: 12, padding: 14, fontSize: 16, marginTop: 8 },
-  modalBg: { flex: 1, backgroundColor: '#0008', justifyContent: 'center', padding: 28 },
-  modal: { backgroundColor: c.bg, borderRadius: 16, padding: 18, gap: 10 },
+const styles = StyleSheet.create({
+  animatedRoot: {
+    flex: 1,
+  },
 });

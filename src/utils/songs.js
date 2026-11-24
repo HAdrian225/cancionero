@@ -153,13 +153,27 @@ export function buildKeyOptions(originalFirstChord) {
   });
 }
 
-const VALID_BEATS = [2, 3, 4, 6];
 const sanitizeBpm = (val) =>
   typeof val === 'number' && Number.isFinite(val) && val >= 40 && val <= 240
     ? Math.round(val)
     : undefined;
 const sanitizeBeats = (val) =>
-  typeof val === 'number' && VALID_BEATS.includes(val) ? val : undefined;
+  typeof val === 'number' && Number.isFinite(val) && val >= 1 && val <= 16
+    ? Math.round(val)
+    : undefined;
+const sanitizeBeatUnit = (val) =>
+  typeof val === 'number' && Number.isFinite(val) && val >= 1 && val <= 16
+    ? Math.round(val)
+    : undefined;
+const sanitizePattern = (val, beats) => {
+  if (!Array.isArray(val)) return undefined;
+  const count = beats ?? val.length;
+  if (count < 1 || count > 16) return undefined;
+  return Array.from({ length: count }, (_, i) => {
+    const x = val[i];
+    return x === 0 || x === 1 || x === 2 || x === 3 ? x : i === 0 ? 2 : 1;
+  });
+};
 
 // Valida un JSON de copia de seguridad ({ groups: [...] } o array directo) y devuelve grupos limpios.
 export function parseBackupPayload(rawText) {
@@ -181,12 +195,16 @@ export function parseBackupPayload(rawText) {
         .map((v, idx) => {
           const bpm = sanitizeBpm(v.bpm);
           const beats = sanitizeBeats(v.beats);
+          const beatUnit = sanitizeBeatUnit(v.beatUnit);
+          const pattern = sanitizePattern(v.pattern, beats);
           return {
             id: typeof v.id === 'string' && v.id ? v.id : uid(),
             name: typeof v.name === 'string' && v.name.trim() ? v.name.trim() : `v${idx + 1}`,
             body: v.body,
             ...(bpm !== undefined ? { bpm } : {}),
             ...(beats !== undefined ? { beats } : {}),
+            ...(beatUnit !== undefined ? { beatUnit } : {}),
+            ...(pattern !== undefined ? { pattern } : {}),
           };
         }),
     }))
@@ -211,6 +229,8 @@ export function mergeBackupGroups(currentGroups, incomingGroups) {
           body: v.body,
           ...(typeof v.bpm === 'number' ? { bpm: v.bpm } : {}),
           ...(typeof v.beats === 'number' ? { beats: v.beats } : {}),
+          ...(typeof v.beatUnit === 'number' ? { beatUnit: v.beatUnit } : {}),
+          ...(Array.isArray(v.pattern) ? { pattern: v.pattern } : {}),
         })),
       });
       continue;
@@ -226,6 +246,8 @@ export function mergeBackupGroups(currentGroups, incomingGroups) {
         body: v.body,
         ...(typeof v.bpm === 'number' ? { bpm: v.bpm } : {}),
         ...(typeof v.beats === 'number' ? { beats: v.beats } : {}),
+        ...(typeof v.beatUnit === 'number' ? { beatUnit: v.beatUnit } : {}),
+        ...(Array.isArray(v.pattern) ? { pattern: v.pattern } : {}),
       });
     }
   }

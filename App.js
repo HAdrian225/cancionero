@@ -236,13 +236,23 @@ function MainApp() {
     setView('song');
   };
 
-  const updateVersionTempo = (g, v, bpm, beats) => {
+  const updateVersionTempo = (g, v, tempo) => {
     save(
       groups.map((x) =>
         x.id === g.id
           ? {
               ...x,
-              versions: x.versions.map((y) => (y.id === v.id ? { ...y, bpm, beats } : y)),
+              versions: x.versions.map((y) =>
+                y.id === v.id
+                  ? {
+                      ...y,
+                      bpm: tempo.bpm,
+                      beats: tempo.beats,
+                      beatUnit: tempo.beatUnit,
+                      pattern: tempo.pattern,
+                    }
+                  : y
+              ),
             }
           : x
       )
@@ -717,7 +727,7 @@ function MainApp() {
         onSelectChord={setChord}
         fs={fs}
         onChangeFs={setFs}
-        onSaveTempo={(bpm, beats) => updateVersionTempo(group, version, bpm, beats)}
+        onSaveTempo={(tempo) => updateVersionTempo(group, version, tempo)}
       />
     );
   } else if (view === 'edit' && group && version) {

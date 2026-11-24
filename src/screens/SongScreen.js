@@ -9,7 +9,13 @@ import { MetronomePanel } from '../components/MetronomePanel';
 import { Screen } from '../components/Screen';
 import { BackButton, Button, HeaderBar, IconButton } from '../components/UI';
 import { H_INSET, MONO_FONT, hapticLight, hapticSelect } from '../theme';
-import { createMetronomeEngine } from '../utils/metronome';
+import {
+  clampBeats,
+  clampBeatUnit,
+  clampBpm,
+  createMetronomeEngine,
+  normalizePattern,
+} from '../utils/metronome';
 import { buildKeyOptions, extractChords, isTabLine } from '../utils/songs';
 
 const MIN_FS = 11;
@@ -34,18 +40,26 @@ export function SongScreen({
   onChangeFs,
   onSaveTempo,
 }) {
+  const initTempo = (v) => {
+    const b = clampBeats(v.beats ?? 4);
+    return {
+      bpm: clampBpm(v.bpm ?? 100),
+      beats: b,
+      beatUnit: clampBeatUnit(v.beatUnit ?? 4),
+      pattern: normalizePattern(v.pattern, b),
+    };
+  };
+
   const [keyPickerOpen, setKeyPickerOpen] = useState(false);
   const [toolTab, setToolTab] = useState('chords'); // 'chords' | 'metronome'
-  const [bpm, setBpm] = useState(version.bpm || 100);
-  const [beats, setBeats] = useState(version.beats || 4);
+  const [tempo, setTempo] = useState(() => initTempo(version));
   const [metroPlaying, setMetroPlaying] = useState(false);
   const [activeBeat, setActiveBeat] = useState(-1);
   const engineRef = useRef(null);
 
-  // Sincroniza BPM/compás y detiene el metrónomo solo al cambiar de canción/versión.
+  // Sincroniza tempo/compás y detiene el metrónomo solo al cambiar de canción/versión.
   useEffect(() => {
-    setBpm(version.bpm || 100);
-    setBeats(version.beats || 4);
+    setTempo(initTempo(version));
     engineRef.current?.stop();
     setMetroPlaying(false);
     setActiveBeat(-1);
@@ -66,21 +80,15 @@ export function SongScreen({
       engineRef.current.stop();
       setMetroPlaying(false);
     } else {
-      engineRef.current.start(bpm, beats);
+      engineRef.current.start(tempo);
       setMetroPlaying(true);
     }
   };
 
-  const handleChangeBpm = (nextBpm) => {
-    setBpm(nextBpm);
-    engineRef.current?.update(nextBpm, beats);
-    onSaveTempo?.(nextBpm, beats);
-  };
-
-  const handleChangeBeats = (nextBeats) => {
-    setBeats(nextBeats);
-    engineRef.current?.update(bpm, nextBeats);
-    onSaveTempo?.(bpm, nextBeats);
+  const handleChangeTempo = (nextTempo) => {
+    setTempo(nextTempo);
+    engineRef.current?.update(nextTempo);
+    onSaveTempo?.(nextTempo);
   };
 
   const lines = useMemo(() => version.body.split('\n'), [version.body]);
@@ -190,7 +198,7 @@ export function SongScreen({
           {metroPlaying ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`Metrónomo activo a ${bpm} BPM. Tocá para abrir`}
+              accessibilityLabel={`Metrónomo activo a ${tempo.bpm} BPM en ${tempo.beats}/${tempo.beatUnit}. Tocá para abrir`}
               hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
               onPress={() => {
                 hapticLight();
@@ -208,7 +216,7 @@ export function SongScreen({
                 ]}
               />
               <Text style={[styles.pillText, { color: c.accent, fontWeight: '700' }]}>
-                {bpm} BPM
+                {tempo.bpm} BPM · {tempo.beats}/{tempo.beatUnit}
               </Text>
             </Pressable>
           ) : null}
@@ -466,13 +474,14 @@ export function SongScreen({
           ) : (
             <MetronomePanel
               c={c}
-              bpm={bpm}
-              beats={beats}
+              bpm={tempo.bpm}
+              beats={tempo.beats}
+              beatUnit={tempo.beatUnit}
+              pattern={tempo.pattern}
               playing={metroPlaying}
               activeBeat={activeBeat}
               onTogglePlay={handleToggleMetro}
-              onChangeBpm={handleChangeBpm}
-              onChangeBeats={handleChangeBeats}
+              onChangeConfig={handleChangeTempo}
             />
           )}
         </View>

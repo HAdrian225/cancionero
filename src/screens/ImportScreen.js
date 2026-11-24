@@ -53,7 +53,7 @@ export function ImportScreen({ c, targetGroup, onBack, onPickFile, onPaste, onOp
           c={c}
           icon="document-text-outline"
           title="Archivo del teléfono"
-          subtitle="Archivos de texto (.txt, .cho, .pro, .crd)"
+          subtitle="Uno o varios temas (.txt, .cho, .pro, .crd)"
           onPress={onPickFile}
         />
         <OptionCard

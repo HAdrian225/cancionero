@@ -73,12 +73,121 @@ export function extractChords(body, semitones = 0) {
   ];
 }
 
+// Búsqueda rápida del primer acorde (evita recorrer toda la canción en listas de 300+ temas).
+export function getFirstChord(body) {
+  if (typeof body !== 'string') return null;
+  for (const line of body.split('\n')) {
+    if (!isTabLine(line) && isChordLine(line)) {
+      const chord = line.trim().split(/\s+/).find(isChord);
+      if (chord) return chord;
+    }
+  }
+  return null;
+}
+
 export function getFirstLyricSnippet(body) {
   const line = body
     .split('\n')
     .map((l) => l.trim())
     .find((l) => l.length > 0 && !isTabLine(l) && !isChordLine(l));
   return line || '';
+}
+
+// Líneas de índice o separadores con una serie de guiones seguidos (nunca borra tablaturas).
+const INDEX_DASHES_RE = /-{3,}|_{3,}|─{3,}|—{2,}/;
+const STANDALONE_NUMBER_RE = /^\s*(\d{1,4})\s*[.)\-º°]?\s*$/;
+
+export function isIndexLine(line) {
+  return typeof line === 'string' && !isTabLine(line) && INDEX_DASHES_RE.test(line);
+}
+
+export function hasMusicContent(body) {
+  return body.split('\n').some((l) => isTabLine(l) || isChordLine(l));
+}
+
+// Limpia líneas de índice con guiones y separa un .txt con múltiples canciones
+// cuando detecta un número solo en su propio renglón.
+export function parseMultiImport(raw, fallbackTitle = '') {
+  const text = typeof raw === 'string' ? raw.replace(/\r/g, '') : '';
+  const allLines = text.split('\n');
+
+  let removedIndexLines = 0;
+  const cleanLines = [];
+  for (const line of allLines) {
+    if (isIndexLine(line)) {
+      removedIndexLines += 1;
+    } else {
+      cleanLines.push(line);
+    }
+  }
+
+  // Detecta si hay renglones que contienen únicamente un número (ej. "1", "23", "145.").
+  const markerIndices = [];
+  for (let i = 0; i < cleanLines.length; i++) {
+    const m = cleanLines[i].match(STANDALONE_NUMBER_RE);
+    if (m) markerIndices.push({ index: i, number: m[1] });
+  }
+
+  if (markerIndices.length >= 2) {
+    const songs = [];
+    for (let k = 0; k < markerIndices.length; k++) {
+      const start = markerIndices[k].index + 1;
+      const end = k + 1 < markerIndices.length ? markerIndices[k + 1].index : cleanLines.length;
+      const num = markerIndices[k].number;
+
+      const chunkLines = cleanLines.slice(start, end);
+      let firstNonEmpty = chunkLines.findIndex((l) => l.trim().length > 0);
+      if (firstNonEmpty < 0) continue;
+
+      const trimmedChunk = chunkLines.slice(firstNonEmpty);
+      const firstLine = trimmedChunk[0].trim();
+
+      let title = `Tema ${num}`;
+      let bodyLines = trimmedChunk;
+
+      // Si la primera línea tras el número NO es acordes ni tablatura ni directiva ChordPro,
+      // y parece un título (<= 95 caracteres), la usamos como título de la canción.
+      const isDirective = /^\s*\{.*\}\s*$/.test(firstLine);
+      const firstHasInlineChords = (firstLine.match(/\[[^\]]+\]/g) || []).some((t) =>
+        isChord(t.slice(1, -1))
+      );
+      if (
+        !isDirective &&
+        !firstHasInlineChords &&
+        !isTabLine(firstLine) &&
+        !isChordLine(firstLine) &&
+        firstLine.length <= 95 &&
+        trimmedChunk.length > 1
+      ) {
+        title = firstLine.replace(/^\d+\s*[.)\-–—]\s*/, '').trim() || `Tema ${num}`;
+        bodyLines = trimmedChunk.slice(1);
+      }
+
+      const normalized = normalize(bodyLines.join('\n'), title);
+      if (!normalized.body || !hasMusicContent(normalized.body)) continue;
+
+      songs.push({
+        id: uid(),
+        number: num,
+        title: normalized.title || `Tema ${num}`,
+        body: normalized.body,
+      });
+    }
+
+    if (songs.length >= 2) {
+      return { songs, removedIndexLines };
+    }
+  }
+
+  // Fallback de 1 sola canción (usa el texto ya limpio de guiones de índice).
+  const single = normalize(cleanLines.join('\n'), fallbackTitle);
+  if (!single.body || !hasMusicContent(single.body)) {
+    return { songs: [], removedIndexLines };
+  }
+  return {
+    songs: [{ id: uid(), number: null, title: single.title, body: single.body }],
+    removedIndexLines,
+  };
 }
 
 // Detecta líneas de tablatura estilo LaCuerda.net / CifraClub:

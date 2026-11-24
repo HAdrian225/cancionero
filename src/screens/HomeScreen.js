@@ -4,7 +4,7 @@ import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-na
 import { Screen } from '../components/Screen';
 import { Button, EmptyState, HeaderBar, IconButton } from '../components/UI';
 import { hapticLight } from '../theme';
-import { extractChords } from '../utils/songs';
+import { getFirstChord } from '../utils/songs';
 
 export function HomeScreen({
   c,
@@ -95,6 +95,9 @@ export function HomeScreen({
         keyExtractor={(g) => g.id}
         style={styles.list}
         contentContainerStyle={filtered.length === 0 ? styles.emptyContainer : styles.listContent}
+        initialNumToRender={16}
+        maxToRenderPerBatch={16}
+        windowSize={7}
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
@@ -117,7 +120,7 @@ export function HomeScreen({
           )
         }
         renderItem={({ item: g }) => {
-          const firstChord = g.versions[0] ? extractChords(g.versions[0].body, 0)[0] : null;
+          const firstChord = g.versions[0] ? getFirstChord(g.versions[0].body) : null;
           const versionText =
             g.versions.length === 1 ? '1 versión' : `${g.versions.length} versiones`;
 

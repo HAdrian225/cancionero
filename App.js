@@ -19,6 +19,7 @@ import {
 } from './src/components/InstallPromptModal';
 import { PdfGuideModal } from './src/components/PdfGuideModal';
 import { ActionSheetModal, RenameModal } from './src/components/UI';
+import { BatchImportScreen } from './src/screens/BatchImportScreen';
 import { EditSongScreen } from './src/screens/EditSongScreen';
 import { GroupScreen } from './src/screens/GroupScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -30,17 +31,19 @@ import { DARK, LIGHT, hapticSuccess } from './src/theme';
 import {
   SAMPLE,
   extractChords,
+  isIndexLine,
   isTabLine,
   mergeBackupGroups,
   nextName,
   normalize,
   parseBackupPayload,
+  parseMultiImport,
   safe,
   uid,
 } from './src/utils/songs';
 import { isChordLine } from './transpose';
 
-const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 const BLOCKED_MIME_PREFIXES = ['image/', 'video/', 'audio/', 'application/pdf', 'application/zip'];
 const PWA_PROMPT_KEY = 'pwaPrompt';
 const PWA_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -73,6 +76,7 @@ function MainApp() {
   const [target, setTarget] = useState(null);
   const [importReturn, setImportReturn] = useState('home');
   const [draft, setDraft] = useState({ title: '', body: '', versionName: '' });
+  const [batchDraft, setBatchDraft] = useState({ songs: [], removedIndexLines: 0 });
   const [prompt, setPrompt] = useState(null); // { label, value, onOk }
   const [sheet, setSheet] = useState(null); // { title, message?, actions?, cancelLabel? }
   const [pdfGuideOpen, setPdfGuideOpen] = useState(false);
@@ -555,21 +559,79 @@ function MainApp() {
   };
 
   const finishDraft = (raw, fallback) => {
-    const d = normalize(raw, fallback);
-    if (!d.body.split('\n').some((l) => isChordLine(l) || isTabLine(l))) {
+    // Si está agregando una versión a una canción puntual, solo limpia líneas de índice sin partir.
+    if (targetGroup) {
+      const cleanedRaw = String(raw || '')
+        .replace(/\r/g, '')
+        .split('\n')
+        .filter((l) => !isIndexLine(l))
+        .join('\n');
+      const d = normalize(cleanedRaw, fallback);
+      if (!d.body.split('\n').some((l) => isChordLine(l) || isTabLine(l))) {
+        notify(
+          'No encontré acordes ni tablatura',
+          'El texto no parece tener acordes ni tablatura. Revisá el archivo o pegá una canción con acordes arriba, formato [Am] o tablatura (e|---|).'
+        );
+        return;
+      }
+      setDraft({
+        title: targetGroup.title,
+        body: d.body,
+        versionName: nextName(targetGroup.versions),
+      });
+      setView('save');
+      return;
+    }
+
+    const result = parseMultiImport(raw, fallback);
+    if (result.songs.length === 0) {
       notify(
         'No encontré acordes ni tablatura',
         'El texto no parece tener acordes ni tablatura. Revisá el archivo o pegá una canción con acordes arriba, formato [Am] o tablatura (e|---|).'
       );
       return;
     }
-    const defaultVersion = targetGroup ? nextName(targetGroup.versions) : 'v1';
+
+    if (result.songs.length > 1) {
+      setBatchDraft(result);
+      setView('batchSave');
+      return;
+    }
+
+    const only = result.songs[0];
     setDraft({
-      title: targetGroup ? targetGroup.title : d.title,
-      body: d.body,
-      versionName: defaultVersion,
+      title: only.title,
+      body: only.body,
+      versionName: 'v1',
     });
     setView('save');
+  };
+
+  const commitBatch = (selectedSongs) => {
+    const incomingGroups = selectedSongs.map((s) => ({
+      id: uid(),
+      title: s.title.trim() || 'Sin título',
+      versions: [{ id: uid(), name: 'v1', body: s.body }],
+    }));
+    const merged = mergeBackupGroups(groups, incomingGroups);
+    const addedVersions =
+      merged.reduce((acc, g) => acc + g.versions.length, 0) -
+      groups.reduce((acc, g) => acc + g.versions.length, 0);
+    const skipped = selectedSongs.length - addedVersions;
+
+    save(merged);
+    setBatchDraft({ songs: [], removedIndexLines: 0 });
+    setTarget(null);
+    hapticSuccess();
+    setView('home');
+    notify(
+      addedVersions === 1
+        ? 'Se importó 1 canción'
+        : `Se importaron ${addedVersions} canciones`,
+      skipped > 0
+        ? `Tu cancionero ahora tiene ${merged.length} canciones (${skipped} ya existían idénticas y se omitieron).`
+        : `Tu cancionero ahora tiene ${merged.length} canciones guardadas localmente.`
+    );
   };
 
   const pickFile = async () => {
@@ -612,7 +674,7 @@ function MainApp() {
         return;
       }
       if (typeof a.size === 'number' && a.size > MAX_IMPORT_BYTES) {
-        notify('Archivo muy grande', 'El archivo supera los 2 MB. Elegí un archivo de texto con acordes.');
+        notify('Archivo muy grande', 'El archivo supera los 10 MB. Elegí un archivo de texto con acordes.');
         return;
       }
 
@@ -780,6 +842,16 @@ function MainApp() {
         onChange={(t) => setDraft((prev) => ({ ...prev, body: t }))}
         onBack={() => setView('import')}
         onContinue={() => finishDraft(draft.body, draft.title)}
+      />
+    );
+  } else if (view === 'batchSave') {
+    screen = (
+      <BatchImportScreen
+        c={c}
+        songs={batchDraft.songs}
+        removedIndexLines={batchDraft.removedIndexLines}
+        onBack={() => setView('import')}
+        onCommit={commitBatch}
       />
     );
   } else if (view === 'save') {

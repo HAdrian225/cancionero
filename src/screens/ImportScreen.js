@@ -32,7 +32,15 @@ function OptionCard({ c, icon, title, subtitle, onPress }) {
   );
 }
 
-export function ImportScreen({ c, targetGroup, onBack, onPickFile, onPaste, onOpenPdfGuide }) {
+export function ImportScreen({
+  c,
+  targetGroup,
+  onBack,
+  onPickFile,
+  onPaste,
+  onOpenYouTube,
+  onOpenPdfGuide,
+}) {
   return (
     <Screen c={c}>
       <HeaderBar left={<BackButton c={c} label="Volver" onPress={onBack} />} />
@@ -62,6 +70,13 @@ export function ImportScreen({ c, targetGroup, onBack, onPickFile, onPaste, onOp
           title="Pegar texto copiado"
           subtitle="Desde Notas, WhatsApp o cualquier página"
           onPress={onPaste}
+        />
+        <OptionCard
+          c={c}
+          icon="logo-youtube"
+          title="Buscar desde un link de YouTube"
+          subtitle="Detecta el tema y abre los acordes en 1 toque"
+          onPress={onOpenYouTube}
         />
       </View>
 

@@ -19,6 +19,7 @@ import {
 } from './src/components/InstallPromptModal';
 import { PdfGuideModal } from './src/components/PdfGuideModal';
 import { ActionSheetModal, RenameModal } from './src/components/UI';
+import { YouTubeAssistModal } from './src/components/YouTubeAssistModal';
 import { BatchImportScreen } from './src/screens/BatchImportScreen';
 import { EditSongScreen } from './src/screens/EditSongScreen';
 import { GroupScreen } from './src/screens/GroupScreen';
@@ -80,6 +81,7 @@ function MainApp() {
   const [prompt, setPrompt] = useState(null); // { label, value, onOk }
   const [sheet, setSheet] = useState(null); // { title, message?, actions?, cancelLabel? }
   const [pdfGuideOpen, setPdfGuideOpen] = useState(false);
+  const [ytAssistOpen, setYtAssistOpen] = useState(false);
   const [installPromptVisible, setInstallPromptVisible] = useState(false);
   const [deferredInstallEvent, setDeferredInstallEvent] = useState(null);
   const [n, setN] = useState(0);
@@ -831,6 +833,7 @@ function MainApp() {
           setDraft({ title: targetGroup?.title || '', body: '', versionName: '' });
           setView('paste');
         }}
+        onOpenYouTube={() => setYtAssistOpen(true)}
         onOpenPdfGuide={() => setPdfGuideOpen(true)}
       />
     );
@@ -928,6 +931,23 @@ function MainApp() {
         onClose={() => setPdfGuideOpen(false)}
         onGoPaste={() => {
           setDraft({ title: targetGroup?.title || '', body: '', versionName: '' });
+          setView('paste');
+        }}
+      />
+      <YouTubeAssistModal
+        c={c}
+        visible={ytAssistOpen}
+        onClose={() => setYtAssistOpen(false)}
+        onReadyToPaste={(detectedTitle, clipboardText) => {
+          const title = targetGroup?.title || detectedTitle || '';
+          if (
+            clipboardText &&
+            clipboardText.split('\n').some((l) => isChordLine(l) || isTabLine(l))
+          ) {
+            finishDraft(clipboardText, title);
+            return;
+          }
+          setDraft({ title, body: clipboardText || '', versionName: '' });
           setView('paste');
         }}
       />
